@@ -1,4 +1,4 @@
-package dev.villani;
+package dev.villani.benchmark.eventloop;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;

@@ -13,7 +13,23 @@ POOL=20 SLEEP_MS=50 ./run.sh vfixed 20000
 JAVA_EXTRA=-XX:+UseCompactObjectHeaders TAG=coh ./run.sh virtual 50000
 ```
 
-Modelos do [Bench.java](src/main/java/dev/villani/Bench.java): `cached`, `fixed` (pool=`POOL`, padrão 500), `vfixed` (pool fixo de virtual threads), `virtual`, `flat`, `flat-dbb`, `flat-nio`, `vsem-heap`, `vsem-slab`. Saída: tempo, bytes alocados pela thread main, GC e pico de heap usada. As classes `CachedThreadPool`, `FixedThreadPool`, `VirtualThreadPool` e `VirtualThreadPoolWithSemaphore` são os experimentos originais e não foram alteradas.
+Modelos do [Bench.java](src/main/java/dev/villani/benchmark/Bench.java): `cached`, `fixed` (pool=`POOL`, padrão 500), `vfixed` (pool fixo de virtual threads), `virtual`, `flat`, `flat-dbb`, `flat-nio`, `vsem-heap`, `vsem-slab`. Saída: tempo, bytes alocados pela thread main, GC e pico de heap usada. As classes `CachedThreadPool`, `FixedThreadPool`, `VirtualThreadPool` e `VirtualThreadPoolWithSemaphore` (em `benchmark/executors`) são os experimentos originais, só movidas de pacote.
+
+## Estrutura de pacotes
+
+```
+dev.villani
+├── benchmark              Bench (ponto de entrada dos experimentos)
+│   ├── executors          pools de threads e variantes com semáforo
+│   └── eventloop          loops flat (FFM, DirectByteBuffer, NIO Selector)
+└── server                 infraestrutura HTTP flat, reutilizável e sem conhecer o domínio (ciclo 2)
+    ├── memory             IntRing, ConnectionPool (memória plana)
+    └── ...                adiante: net, http, json, routing, scheduling
+└── application            casos de uso que consomem o server (ciclo 2)
+    └── agendamento        handlers, repository, rules (API de agendamento)
+```
+
+Regra: `server` é a base reutilizável e nunca importa `application` nem `benchmark` (verificado por `PackageDependencyTest`); `application` depende de `server`. Dentro do `server`, camadas técnicas (`memory`, `net`, `http`, `json`, `routing`); dentro do `application`, um pacote por feature. Testes seguem o mesmo layout, em estilo BDD (given/when/then), com utilitários em `dev.villani.testsupport` (`AllocationProbe`).
 
 ## Resultados
 
@@ -41,9 +57,9 @@ Alocação por task nas variantes flat é zero. A diferença de ~540 KB contra ~
 
 ### Variantes flat
 
-- [FlatEventLoop](src/main/java/dev/villani/FlatEventLoop.java): FFM (`Arena` + `MemorySegment`), liberação determinística.
-- [DirectBufferEventLoop](src/main/java/dev/villani/DirectBufferEventLoop.java): `ByteBuffer.allocateDirect`; limitado por `-XX:MaxDirectMemorySize`, liberação via `Cleaner`.
-- [NioEventLoop](src/main/java/dev/villani/NioEventLoop.java): espera em `Selector.select(timeoutMs)` (granularidade de 1 ms), o mesmo ponto de bloqueio usado para I/O em servidores NIO.
+- [FlatEventLoop](src/main/java/dev/villani/benchmark/eventloop/FlatEventLoop.java): FFM (`Arena` + `MemorySegment`), liberação determinística.
+- [DirectBufferEventLoop](src/main/java/dev/villani/benchmark/eventloop/DirectBufferEventLoop.java): `ByteBuffer.allocateDirect`; limitado por `-XX:MaxDirectMemorySize`, liberação via `Cleaner`.
+- [NioEventLoop](src/main/java/dev/villani/benchmark/eventloop/NioEventLoop.java): espera em `Selector.select(timeoutMs)` (granularidade de 1 ms), o mesmo ponto de bloqueio usado para I/O em servidores NIO.
 
 Como o atraso é constante, uma fila FIFO de prazos substitui a timer wheel.
 

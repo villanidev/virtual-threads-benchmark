@@ -1,4 +1,4 @@
-package dev.villani.flat;
+package dev.villani.testsupport;
 
 import java.lang.management.ManagementFactory;
 

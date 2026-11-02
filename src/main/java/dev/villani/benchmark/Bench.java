@@ -1,5 +1,9 @@
-package dev.villani;
+package dev.villani.benchmark;
 
+import dev.villani.benchmark.eventloop.DirectBufferEventLoop;
+import dev.villani.benchmark.eventloop.FlatEventLoop;
+import dev.villani.benchmark.eventloop.NioEventLoop;
+import dev.villani.benchmark.executors.SemaphoreSlabBench;
 import java.lang.management.ManagementFactory;
 import java.time.Duration;
 import java.util.concurrent.ExecutorService;
