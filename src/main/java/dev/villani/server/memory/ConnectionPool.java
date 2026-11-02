@@ -4,8 +4,8 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * Object pool of connection slots, fully pre-allocated. A slot is an int index; its read and write buffers are
- * slices of one off-heap slab. The ByteBuffer views are created once at construction (the only allocations),
+ * Object pool of connection slots, fully pre-allocated. A slot is an int index; its read ring and write buffer are
+ * slices of one off-heap slab. The views are created once at construction (the only allocations),
  * so acquire/release never allocate. Free slots are kept in a FIFO IntRing.
  * Single-threaded: use from the event loop only.
  */
@@ -24,7 +24,7 @@ public final class ConnectionPool {
 
     private final int capacity;
     private final ByteBuffer slab;
-    private final ByteBuffer[] readViews;
+    private final ByteRing[] readRings;
     private final ByteBuffer[] writeViews;
     private final ByteBuffer inUse; // 1 byte per slot, off-heap
     private final IntRing free;
@@ -34,20 +34,23 @@ public final class ConnectionPool {
         if (capacity <= 0 || readBytes <= 0 || writeBytes <= 0) {
             throw new IllegalArgumentException("capacity and buffer sizes must be > 0");
         }
+        if (Integer.bitCount(readBytes) != 1) {
+            throw new IllegalArgumentException("readBytes must be a power of two (it backs a ByteRing): " + readBytes);
+        }
         this.capacity = capacity;
         final long total = (long) capacity * (readBytes + writeBytes);
         if (total > Integer.MAX_VALUE) {
             throw new IllegalArgumentException("slab too large: " + total);
         }
         this.slab = ByteBuffer.allocateDirect((int) total).order(ByteOrder.nativeOrder());
-        this.readViews = new ByteBuffer[capacity];
+        this.readRings = new ByteRing[capacity];
         this.writeViews = new ByteBuffer[capacity];
         this.inUse = ByteBuffer.allocateDirect(capacity);
         this.free = new IntRing(capacity);
         final int stride = readBytes + writeBytes;
         for (int i = 0; i < capacity; i++) {
             final int base = i * stride;
-            readViews[i] = slab.slice(base, readBytes);
+            readRings[i] = new ByteRing(slab.slice(base, readBytes));
             writeViews[i] = slab.slice(base + readBytes, writeBytes);
             free.offer(i);
         }
@@ -68,7 +71,7 @@ public final class ConnectionPool {
             return NONE;
         }
         inUse.put(slot, (byte) 1);
-        readViews[slot].clear();
+        readRings[slot].clear();
         writeViews[slot].clear();
         active++;
         return slot;
@@ -87,8 +90,9 @@ public final class ConnectionPool {
         return slot >= 0 && slot < capacity && inUse.get(slot) != 0;
     }
 
-    public ByteBuffer readBuffer(int slot) {
-        return readViews[slot];
+    /** Unparsed incoming bytes of the connection (partial or pipelined requests). */
+    public ByteRing readRing(int slot) {
+        return readRings[slot];
     }
 
     public ByteBuffer writeBuffer(int slot) {

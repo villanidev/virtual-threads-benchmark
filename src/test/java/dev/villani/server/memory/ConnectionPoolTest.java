@@ -56,7 +56,8 @@ class ConnectionPoolTest {
             // given
             final ConnectionPool pool = new ConnectionPool(1, 16, 16);
             final int slot = pool.acquire();
-            pool.readBuffer(slot).put((byte) 7).put((byte) 8);
+            pool.readRing(slot).putByte((byte) 7);
+            pool.readRing(slot).putByte((byte) 8);
             pool.release(slot);
 
             // when
@@ -64,8 +65,8 @@ class ConnectionPoolTest {
 
             // then
             assertEquals(slot, again);
-            assertEquals(0, pool.readBuffer(again).position());
-            assertEquals(16, pool.readBuffer(again).limit());
+            assertEquals(0, pool.readRing(again).readable());
+            assertEquals(16, pool.readRing(again).writable());
         }
     }
 
@@ -129,15 +130,22 @@ class ConnectionPoolTest {
 
             // when
             for (int i = 0; i < 3; i++) {
-                fill(pool.readBuffer(slots[i]), (byte) (10 + i));
+                fillRing(pool.readRing(slots[i]), (byte) (10 + i));
                 fill(pool.writeBuffer(slots[i]), (byte) (20 + i));
             }
 
             // then
             for (int i = 0; i < 3; i++) {
-                assertFilledWith(pool.readBuffer(slots[i]), (byte) (10 + i));
+                assertRingFilledWith(pool.readRing(slots[i]), (byte) (10 + i));
                 assertFilledWith(pool.writeBuffer(slots[i]), (byte) (20 + i));
             }
+        }
+
+        @Test
+        @DisplayName("given a read size that is not a power of two, when creating a pool, then it is rejected")
+        void givenNonPowerOfTwoReadSize_whenCreating_thenRejected() {
+            // when / then
+            assertThrows(IllegalArgumentException.class, () -> new ConnectionPool(1, 12, 8));
         }
 
         @Test
@@ -163,7 +171,7 @@ class ConnectionPoolTest {
             final Runnable cycle = () -> {
                 for (int i = 0; i < 64; i++) {
                     held[i] = pool.acquire();
-                    pool.readBuffer(held[i]).put((byte) 1);
+                    pool.readRing(held[i]).putByte((byte) 1);
                 }
                 for (int i = 0; i < 64; i++) {
                     pool.release(held[i]);
@@ -172,6 +180,19 @@ class ConnectionPoolTest {
 
             // when / then
             AllocationProbe.assertZeroAlloc(cycle, 20_000, 2_000);
+        }
+    }
+
+    private static void fillRing(ByteRing ring, byte value) {
+        while (ring.putByte(value)) {
+            // fill until full
+        }
+    }
+
+    private static void assertRingFilledWith(ByteRing ring, byte value) {
+        assertEquals(ring.capacity(), ring.readable());
+        for (int i = 0; i < ring.readable(); i++) {
+            assertEquals(value, ring.peek(i));
         }
     }
 
