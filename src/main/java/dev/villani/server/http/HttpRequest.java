@@ -46,6 +46,15 @@ public final class HttpRequest {
         return parser.contentLength(slot);
     }
 
+    /** Ring holding the request bytes; body bytes live at {@link #bodyOffset()}. */
+    public ByteRing ring() {
+        return ring;
+    }
+
+    public int bodyOffset() {
+        return parser.bodyStart(slot);
+    }
+
     public byte bodyByte(int index) {
         if (index < 0 || index >= parser.contentLength(slot)) {
             throw new IndexOutOfBoundsException(index);
