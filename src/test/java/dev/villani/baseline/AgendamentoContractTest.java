@@ -29,7 +29,10 @@ class AgendamentoContractTest {
         LOOP_OFF,
         VIRTUAL_HEAP,
         FIXED_HEAP,
-        CACHED_HEAP
+        CACHED_HEAP,
+        VIRTUAL_OFF,
+        FIXED_OFF,
+        CACHED_OFF
     }
 
     private interface Running extends AutoCloseable {
@@ -64,7 +67,7 @@ class AgendamentoContractTest {
             };
         }
         final ConcurrencyModel model = ConcurrencyModel.valueOf(impl.name().substring(0, impl.name().indexOf('_')));
-        final BaselineServer app = new BaselineServer("127.0.0.1", 0, model, BaselineServer.Memory.HEAP, 16,
+        final BaselineServer app = new BaselineServer("127.0.0.1", 0, model, impl.name().endsWith("_OFF") ? BaselineServer.Memory.OFFHEAP : BaselineServer.Memory.HEAP, 16,
                 DelayPolicy.fixed(1));
         app.start();
         return new Running() {
@@ -147,6 +150,45 @@ class AgendamentoContractTest {
             // routing
             assertEquals(404, call(client, port, "GET", "/nope", null).status());
             assertEquals(405, call(client, port, "DELETE", api, null).status());
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(Impl.class)
+    @DisplayName("concurrent creates get unique sequential ids and none is lost")
+    void concurrentCreates(Impl impl) throws Exception {
+        final HttpClient client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
+        final int threads = 8;
+        final int each = 50;
+        try (Running app = start(impl)) {
+            final int port = app.port();
+            final java.util.Set<String> bodies = java.util.concurrent.ConcurrentHashMap.newKeySet();
+            final java.util.List<Thread> workers = new java.util.ArrayList<>();
+            final java.util.concurrent.atomic.AtomicInteger failures = new java.util.concurrent.atomic.AtomicInteger();
+            for (int t = 0; t < threads; t++) {
+                final int base = t * each;
+                final Thread w = Thread.ofVirtual().start(() -> {
+                    for (int i = 0; i < each; i++) {
+                        try {
+                            final Reply r = call(client, port, "POST", "/api/agendamentos",
+                                    create("N" + i, 1 + (base + i) % 1000, JAN_2 + 9 * 3600 + (base + i) / 1000 * 86_400L));
+                            if (r.status() != 201 || !bodies.add(r.body())) {
+                                failures.incrementAndGet();
+                            }
+                        } catch (Exception e) {
+                            failures.incrementAndGet();
+                        }
+                    }
+                });
+                workers.add(w);
+            }
+            for (Thread w : workers) {
+                w.join();
+            }
+            // then every create succeeded with a distinct id (so ids are exactly 1..N)
+            assertEquals(0, failures.get());
+            assertEquals(threads * each, bodies.size());
+            assertEquals(true, bodies.contains("{\"id\":" + threads * each + ",\"status\":\"CONFIRMADO\"}"));
         }
     }
 }

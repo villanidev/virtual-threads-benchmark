@@ -5,48 +5,72 @@
 # Pinning: this CPU has SMT (cpu0 and cpu1 share a physical core), so the server uses CPU 0, CPU 1 stays idle
 # and k6 runs on CPUs 2-3 (the other physical core).
 # Env: RATE (0 = closed model; >0 = k6 constant-arrival-rate req/s) VUS (50) DELAY_MS (20) WARM (0 = no boot warm-up) PHASES (write,read,mixed) PORT (8080)
+#      IMPL (unset = legacy flat run; loop-off|vt-heap|vt-off|fixed-heap|fixed-off|cached-heap|cached-off:
+#      comparison mode, outputs go to results/compare/raw, NMT on) POOL (200, fixed models)
 #      SERVER_CPU (0) LOAD_CPU (2-3) TAG JAVA_EXTRA
 # Server: 1 vCPU, -Xmx128m -Xms128m, JFR profile + GC log. Load generator: k6 pinned via LOAD_CPU.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 N=${1:-1000}; VUS=${2:-${VUS:-50}}
-PORT=${PORT:-8080}; TAG=${TAG:-}; NAME="server-${N}${TAG:+-$TAG}"
-mkdir -p jfr bench/results
+PORT=${PORT:-8080}; TAG=${TAG:-}; IMPL=${IMPL:-}; POOL=${POOL:-200}
+if [ -n "$IMPL" ]; then
+  OUT_DIR=results/compare/raw; JFR_DIR=$OUT_DIR
+  SUF=""; case $IMPL in fixed-*) SUF="-p$POOL";; esac
+  NAME="${IMPL}${SUF}-${N}${TAG:+-$TAG}"
+else
+  OUT_DIR=bench/results; JFR_DIR=jfr
+  NAME="server-${N}${TAG:+-$TAG}"
+fi
+export OUT_DIR
+mkdir -p "$JFR_DIR" "$OUT_DIR"
 [ -d target/classes/dev/villani/application ] || mvn -q compile
+JVM_FLAGS=""; MAIN=(dev.villani.application.agendamento.AgendamentoServer "$PORT" "${DELAY_MS:-20}" "${WARM:-0}")
+CP=target/classes
+if [ -n "$IMPL" ]; then
+  JVM_FLAGS="-XX:NativeMemoryTracking=summary"
+  if [ "$IMPL" != loop-off ]; then
+    [ -f target/classpath.txt ] || mvn -q dependency:build-classpath -Dmdep.outputFile=target/classpath.txt >/dev/null
+    CP="target/classes:$(cat target/classpath.txt)"
+    CONC=${IMPL%%-*}; MEM=${IMPL#*-}
+    case $CONC in vt) CONC=VIRTUAL;; fixed) CONC=FIXED;; cached) CONC=CACHED;; *) echo "bad IMPL $IMPL"; exit 2;; esac
+    case $MEM in heap) MEM=HEAP;; off) MEM=OFFHEAP;; *) echo "bad IMPL $IMPL"; exit 2;; esac
+    MAIN=(dev.villani.baseline.BaselineServer "$PORT" "${DELAY_MS:-20}" "$CONC" "$MEM" "$POOL" "${WARM:-0}")
+  fi
+fi
 
 # shellcheck disable=SC2086
-taskset -c "${SERVER_CPU:-0}" java -Xmx128m -Xms128m -XX:+AlwaysPreTouch ${JAVA_EXTRA:-} \
+taskset -c "${SERVER_CPU:-0}" java -Xmx128m -Xms128m -XX:+AlwaysPreTouch ${JAVA_EXTRA:-} $JVM_FLAGS \
   --enable-native-access=ALL-UNNAMED \
-  -Xlog:gc:file=jfr/${NAME}.gc.log \
-  -XX:StartFlightRecording=filename=jfr/${NAME}.jfr,settings=profile,dumponexit=true \
-  -cp target/classes dev.villani.application.agendamento.AgendamentoServer \
-  "$PORT" "${DELAY_MS:-20}" "${WARM:-0}" > "jfr/${NAME}.server.log" 2>&1 &
+  -Xlog:gc:file=${JFR_DIR}/${NAME}.gc.log \
+  -XX:StartFlightRecording=filename=${JFR_DIR}/${NAME}.jfr,settings=profile,dumponexit=true \
+  -cp "$CP" "${MAIN[@]}" > "${JFR_DIR}/${NAME}.server.log" 2>&1 &
 SERVER=$!
 trap 'kill $SERVER 2>/dev/null || true' EXIT
 
 # the real port only opens after the (optional) warm-up, so wait for the server's own "listening" line
 for _ in $(seq 1 "${BOOT_TIMEOUT_S:-600}"); do
-  grep -q "listening" "jfr/${NAME}.server.log" 2>/dev/null && break
-  kill -0 "$SERVER" 2>/dev/null || { echo "server died during boot"; cat "jfr/${NAME}.server.log"; exit 1; }
+  grep -q "listening" "${JFR_DIR}/${NAME}.server.log" 2>/dev/null && break
+  kill -0 "$SERVER" 2>/dev/null || { echo "server died during boot"; cat "${JFR_DIR}/${NAME}.server.log"; exit 1; }
   sleep 1
 done
 
-OUT=bench/results/${NAME}.txt
+OUT=${OUT_DIR}/${NAME}.txt
 PHASES=${PHASES:-write,read,mixed}
 {
-  echo "# N=$N vus=$VUS delay=${DELAY_MS:-20}ms warm=${WARM:-0} rate=${RATE:-0} jopts=${JAVA_EXTRA:-} tool=k6 $(date -Is)"
+  echo "# impl=${IMPL:-loop-off} pool=$POOL N=$N vus=$VUS delay=${DELAY_MS:-20}ms warm=${WARM:-0} rate=${RATE:-0} jopts=${JAVA_EXTRA:-} tool=k6 $(date -Is)"
   printf '%-6s %8s %5s %9s %9s %8s %8s %8s %8s\n' phase requests vus time_ms req/s p50_ms p90_ms p99_ms max_ms
   WRITTEN=0
   for PHASE in ${PHASES//,/ }; do
     taskset -c "${LOAD_CPU:-2-3}" k6 run --quiet --no-usage-report --no-color \
-      -e PHASE="$PHASE" -e N="$N" -e VUS="$VUS" -e PORT="$PORT" -e WRITTEN="$WRITTEN" -e RATE="${RATE:-0}" -e TAG="$TAG" bench/k6/agendamento.js
+      -e PHASE="$PHASE" -e N="$N" -e VUS="$VUS" -e PORT="$PORT" -e WRITTEN="$WRITTEN" -e RATE="${RATE:-0}" -e TAG="$NAME" bench/k6/agendamento.js
     [ "$PHASE" = write ] && WRITTEN=$((WRITTEN + N))
     [ "$PHASE" = mixed ] && WRITTEN=$((WRITTEN + N / 5))
   done
   echo "server RSS (KB): $(awk '/VmRSS/{print $2}' /proc/$SERVER/status)  threads: $(awk '/Threads/{print $2}' /proc/$SERVER/status)"
+  if [ -n "$IMPL" ]; then jcmd "$SERVER" VM.native_memory summary > "${JFR_DIR}/${NAME}.nmt.txt" 2>&1 || true; fi
 } | tee "$OUT"
 
 kill "$SERVER"
 wait "$SERVER" 2>/dev/null || true
-echo "GCs: $(grep -c 'Pause' "jfr/${NAME}.gc.log" || true)" | tee -a "$OUT"
-echo "JFR: jfr/${NAME}.jfr"
+echo "GCs: $(grep -c 'Pause' "${JFR_DIR}/${NAME}.gc.log" || true)" | tee -a "$OUT"
+echo "JFR: ${JFR_DIR}/${NAME}.jfr"

@@ -71,5 +71,5 @@ export function handleSummary(data) {
     `${d.med.toFixed(2).padStart(8)} ${d['p(90)'].toFixed(2).padStart(8)} ${d['p(99)'].toFixed(2).padStart(8)} ` +
     `${d.max.toFixed(2).padStart(8)}  avg=${d.avg.toFixed(2)} failed=${failed}` +
     ` dropped=${data.metrics.dropped_iterations ? data.metrics.dropped_iterations.values.count : 0}\n`;
-  return { stdout: line, [`bench/results/k6-${PHASE}-${N}${__ENV.TAG ? '-' + __ENV.TAG : ''}.json`]: JSON.stringify(data) };
+  return { stdout: line, [`${__ENV.OUT_DIR || 'bench/results'}/k6-${PHASE}-${N}${__ENV.TAG ? '-' + __ENV.TAG : ''}.json`]: JSON.stringify(data) };
 }

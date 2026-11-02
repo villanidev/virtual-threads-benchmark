@@ -1,7 +1,7 @@
 package dev.villani.application.agendamento;
 
 /** Date arithmetic without java.time objects. */
-final class AgendamentoDias {
+public final class AgendamentoDias {
 
     private static final int[] DAYS_IN_MONTH = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
 
@@ -9,7 +9,7 @@ final class AgendamentoDias {
     }
 
     /** Epoch day (UTC) of the 10 ASCII bytes {@code YYYY-MM-DD}, or Long.MIN_VALUE when invalid. */
-    static long parseIsoDate(byte[] text, int length) {
+    public static long parseIsoDate(byte[] text, int length) {
         if (length != 10 || text[4] != '-' || text[7] != '-') {
             return Long.MIN_VALUE;
         }

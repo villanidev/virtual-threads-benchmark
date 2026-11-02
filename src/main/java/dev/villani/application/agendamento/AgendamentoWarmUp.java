@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * pipelining, connection churn), then closes it. The JIT compiles per method, so the real instance
  * starts with the hot classes already compiled. It allocates freely: it is boot-time work only.
  */
-final class AgendamentoWarmUp {
+public final class AgendamentoWarmUp {
 
     private static final int CLIENTS = 16;
     private static final int WARM_DELAY_MS = 1;
@@ -39,22 +39,29 @@ final class AgendamentoWarmUp {
                 }
             }, "warm-up-loop");
             loop.start();
-            final int port = warm.port();
-            final AtomicInteger next = new AtomicInteger();
-            final Thread[] clients = new Thread[CLIENTS];
-            for (int c = 0; c < CLIENTS; c++) {
-                clients[c] = new Thread(() -> client(port, cycles, next), "warm-up-client-" + c);
-                clients[c].start();
-            }
-            for (Thread t : clients) {
-                t.join();
-            }
+            drive(warm.port(), cycles, true);
             warm.stop();
             loop.join(2_000);
         }
     }
 
-    private static void client(int port, int cycles, AtomicInteger next) {
+    /**
+     * Drives any server speaking the Agendamento API on {@code port} with {@code cycles} synthetic cycles from
+     * {@link #CLIENTS} socket clients. {@code pipelining} must be off for servers that do not support it.
+     */
+    public static void drive(int port, int cycles, boolean pipelining) throws InterruptedException {
+        final AtomicInteger next = new AtomicInteger();
+        final Thread[] clients = new Thread[CLIENTS];
+        for (int c = 0; c < CLIENTS; c++) {
+            clients[c] = new Thread(() -> client(port, cycles, next, pipelining), "warm-up-client-" + c);
+            clients[c].start();
+        }
+        for (Thread t : clients) {
+            t.join();
+        }
+    }
+
+    private static void client(int port, int cycles, AtomicInteger next, boolean pipelining) {
         try {
             Socket s = new Socket("127.0.0.1", port);
             s.setTcpNoDelay(true);
@@ -69,7 +76,7 @@ final class AgendamentoWarmUp {
                 final OutputStream out = s.getOutputStream();
                 final InputStream in = new java.io.BufferedInputStream(s.getInputStream());
                 final long day = BASE + (n / 1000) * 86_400L;
-                if (n % PIPELINE_EVERY == 0) {
+                if (pipelining && n % PIPELINE_EVERY == 0) {
                     out.write((create(n, day) + list(day)).getBytes(StandardCharsets.US_ASCII));
                     readResponse(in);
                     readResponse(in);
@@ -126,8 +133,9 @@ final class AgendamentoWarmUp {
             }
             head.append((char) b);
         }
-        final int k = head.indexOf("Content-Length: ");
-        final int bodyLength = k < 0 ? 0 : Integer.parseInt(head.substring(k + 16, head.indexOf("\r\n", k)));
+        final String lower = head.toString().toLowerCase();
+        final int k = lower.indexOf("content-length: ");
+        final int bodyLength = k < 0 ? 0 : Integer.parseInt(lower.substring(k + 16, lower.indexOf("\r\n", k)));
         return head + new String(in.readNBytes(bodyLength), StandardCharsets.US_ASCII);
     }
 }
