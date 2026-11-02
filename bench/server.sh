@@ -31,6 +31,8 @@ if [ -n "$IMPL" ]; then
   if [ "$IMPL" != loop-off ]; then
     [ -f target/classpath.txt ] || mvn -q dependency:build-classpath -Dmdep.outputFile=target/classpath.txt >/dev/null
     CP="target/classes:$(cat target/classpath.txt)"
+    # the JDK HttpServer leaves Nagle on by default: headers+body in two segments hit the 40 ms delayed ACK
+    JVM_FLAGS="$JVM_FLAGS -Dsun.net.httpserver.nodelay=true"
     CONC=${IMPL%%-*}; MEM=${IMPL#*-}
     case $CONC in vt) CONC=VIRTUAL;; fixed) CONC=FIXED;; cached) CONC=CACHED;; *) echo "bad IMPL $IMPL"; exit 2;; esac
     case $MEM in heap) MEM=HEAP;; off) MEM=OFFHEAP;; *) echo "bad IMPL $IMPL"; exit 2;; esac
@@ -66,6 +68,7 @@ PHASES=${PHASES:-write,read,mixed}
     [ "$PHASE" = write ] && WRITTEN=$((WRITTEN + N))
     [ "$PHASE" = mixed ] && WRITTEN=$((WRITTEN + N / 5))
   done
+  echo "# load-end $(date -Is)"
   echo "server RSS (KB): $(awk '/VmRSS/{print $2}' /proc/$SERVER/status)  threads: $(awk '/Threads/{print $2}' /proc/$SERVER/status)"
   if [ -n "$IMPL" ]; then jcmd "$SERVER" VM.native_memory summary > "${JFR_DIR}/${NAME}.nmt.txt" 2>&1 || true; fi
 } | tee "$OUT"

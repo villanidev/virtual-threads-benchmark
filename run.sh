@@ -7,6 +7,10 @@ if [ "$1" = "server" ]; then
   # ./run.sh server <N> [vus]  -> real load test of the Agendamento server (see bench/server.sh)
   exec bash bench/server.sh "$2" "${3:-}"
 fi
+if [ "$1" = "compare" ]; then
+  # ./run.sh compare <N> [vus]  -> concurrency x memory matrix under the same k6 load (see bench/compare.sh)
+  exec bash bench/compare.sh "$2" "${3:-}"
+fi
 MODEL=$1; N=$2; CPU=${3:-0}
 mkdir -p jfr
 [ -d target/classes/dev/villani/benchmark ] || mvn -q compile

@@ -147,6 +147,33 @@ Com 4k req/s a mediana de leitura é 0,3 ms; o p99 de dezenas de ms vem de pausa
 
 Compact Object Headers (JDK 25, `JAVA_EXTRA=-XX:+UseCompactObjectHeaders TAG=coh`), RATE=4000: RSS 218,3 MB (base) vs 221,0 MB (COH); mesma vazão e latência dentro do ruído. **Sem queda de memória**: o heap de 128 MB é pré-tocado (`AlwaysPreTouch`) e os dados vivem off-heap, então não há objetos em volume para o cabeçalho menor economizar; o COH só ajuda aplicações com muitos objetos pequenos na heap.
 
+## Passo 11: concorrência x layout de memória (mesma API, mesmo k6)
+
+`./run.sh compare 60000 50` roda 9 execuções (`loop-off`, `vt|fixed|cached` x `heap|off`, `fixed` com pool 200 e 16): 1 vCPU, `-Xmx128m -Xms128m`, JFR, aquecimento de 10k ciclos, k6 em taxa constante (`RATE=2000`, delay 20 ms, 50 VUs). Pastas: `results/compare/raw/` (ignorada) e [results/compare/summary.md](results/compare/summary.md) (tabelas completas, geradas por `bench/summarize.py`). `IMPL=<modelo>-<memória> ./run.sh server N` roda uma célula só.
+
+- **loop-off**: o servidor flat (event loop NIO + off-heap). **\*-heap**: `HttpServer` do JDK + Jackson + records + `ConcurrentHashMap`. **\*-off**: o mesmo `HttpServer`, mas JSON flat, tabelas off-heap com `StampedLock` e pool limitado de contextos de requisição (sem `ThreadLocal`). O teste de contrato (`AgendamentoContractTest`) garante respostas idênticas nas 7 variantes.
+
+| impl | GCs na carga | pausa total | alloc KB/req (JFR, estimativa) | RSS MB | threads | CPU JVM |
+|---|---|---|---|---|---|---|
+| loop-off | 0 | 0 ms | ~0 | 233 | 16 | 3,1% |
+| vt-off | 69 | 47 ms | 13,6 | 258 | 21 | 7,6% |
+| fixed-off (200) | 71 | 94 ms | 12,3 | 280 | 218 | 9,6% |
+| cached-off | 66 | 65 ms | 12,5 | 273 | 68 | 8,7% |
+| vt-heap | 418 | 496 ms | 82,7 | 236 | 21 | 9,0% |
+| fixed-heap (200) | 367 | 553 ms | 62,3 | 265 | 218 | 12,6% |
+| cached-heap | 321 | 458 ms | 62,4 | 246 | 71 | 10,0% |
+| fixed-off (16) | 51 | 48 ms | 12,4 | 265 | 34 | 6,1% |
+| fixed-heap (16) | 178 | 224 ms | 43,5 | 236 | 34 | 6,9% |
+
+Leitura:
+- **Latência não discrimina a 2k req/s**: write p50 ~20,5 ms (o delay) e read p50 0,24–0,43 ms em todos. O p99 de leitura vai de 0,95 ms (loop-off) a 4,3 ms (fixed-heap 200).
+- **Exceção: `fixed` com pool 16** limita o write a pool/delay = 16/20 ms = ~800 req/s (p50 254 ms, 36k iterações perdidas). É o efeito do ciclo 1: pool pequeno com tarefa bloqueante. (Nesses casos a fase `read` lista dias que não chegaram a ser escritos, então ela fica mais leve que o normal.)
+- **Alocação**: heap ~62–83 KB/req e centenas de GCs; off-heap com threads cai para ~12–14 KB/req (5–6x menos) e dezenas de GCs; o que sobra é o **piso do `HttpServer` do JDK** (exchange, headers, streams), que o layout de memória não elimina. Só o servidor flat chega a ~0 e a 0 GCs na carga.
+- **Off-heap é uma técnica ortogonal à concorrência** e vale com modelos tradicionais, mas sozinha não zera a alocação enquanto o transporte for o do JDK; e o custo aparece em RSS (+20–45 MB de contextos e tabelas off-heap contra o heap fixo de 128 MB).
+- **RSS**: o loop-off é o menor da classe off-heap (233 MB); os `*-off` com threads ficam em 258–280 MB. O heap pré-tocado (128 MB) é comum a todos.
+- **Achado de configuração**: o `HttpServer` do JDK vem sem `TCP_NODELAY`; headers e body saem em segmentos separados e o delayed-ACK adiciona ~40 ms às respostas com corpo. O `server.sh` usa `-Dsun.net.httpserver.nodelay=true` nas variantes do JDK (sem isso o p50 de leitura era 42 ms).
+- Cuidados: uma execução por célula, laptop com SMT, k6 em CPUs 1-3 (irmã SMT do servidor); a estimativa de alocação do JFR é estatística e `jdk.CPULoad` é relativo ao que a JVM enxerga.
+
 ## Limitações
 
 - Uma execução por ponto; sem repetições, mediana ou dispersão. As diferenças de tempo entre as variantes flat (1,06–1,14s) e o ganho de tempo do Compact Object Headers não são conclusivos.
