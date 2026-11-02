@@ -15,6 +15,7 @@ public final class HttpResponse {
     private final ByteBuffer body;
     private int status = 200;
     private boolean keepAlive = true;
+    private int deferMs;
 
     public HttpResponse(int bodyCapacity) {
         this.body = ByteBuffer.allocateDirect(bodyCapacity);
@@ -23,6 +24,7 @@ public final class HttpResponse {
     public void reset() {
         status = 200;
         keepAlive = true;
+        deferMs = 0;
         body.clear();
     }
 
@@ -47,5 +49,15 @@ public final class HttpResponse {
     /** Body buffer in write mode; handlers append to it. */
     public ByteBuffer body() {
         return body;
+    }
+
+    /** Asks the server to hold the response for {@code ms} and call {@link AsyncHandler#complete} afterwards. */
+    public HttpResponse deferMs(int ms) {
+        this.deferMs = ms;
+        return this;
+    }
+
+    public int deferMs() {
+        return deferMs;
     }
 }

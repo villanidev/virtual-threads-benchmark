@@ -29,6 +29,11 @@ public final class HttpRequest {
         return this;
     }
 
+    /** Connection slot this request arrived on; async handlers key their in-flight state by it. */
+    public int slot() {
+        return slot;
+    }
+
     public int method() {
         return parser.method(slot);
     }

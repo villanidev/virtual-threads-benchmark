@@ -11,4 +11,17 @@ public interface ConnectionHandler {
 
     /** New bytes are available in the slot's read ring. The ring may also be empty (spurious wake-up). */
     void onReadable(NioServer server, int slot);
+
+    /** Called when a connection slot is closed, before it is released to the pool. */
+    default void onClosed(int slot) {
+    }
+
+    /** Called once per event-loop iteration, after I/O was handled (timers, deferred work). */
+    default void onTick(NioServer server) {
+    }
+
+    /** Upper bound in milliseconds the loop may block waiting for I/O (0 = poll). */
+    default long maxWaitMs() {
+        return Long.MAX_VALUE;
+    }
 }

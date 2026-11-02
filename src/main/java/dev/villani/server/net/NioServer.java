@@ -41,6 +41,7 @@ public final class NioServer implements AutoCloseable {
     private final SelectionKey[] keys;
     private final Integer[] slotIds;
     private final boolean[] writePending;
+    private final boolean[] closeAfterWrite;
     private final ReadyQueue ready;
     private final Consumer<SelectionKey> onKey = this::onKey;
     private boolean acceptPaused;
@@ -54,6 +55,7 @@ public final class NioServer implements AutoCloseable {
         this.keys = new SelectionKey[n];
         this.slotIds = new Integer[n];
         this.writePending = new boolean[n];
+        this.closeAfterWrite = new boolean[n];
         this.ready = new ReadyQueue(n);
         for (int i = 0; i < n; i++) {
             slotIds[i] = i;
@@ -75,6 +77,10 @@ public final class NioServer implements AutoCloseable {
 
     public boolean isWritePending(int slot) {
         return writePending[slot];
+    }
+
+    public boolean isOpen(int slot) {
+        return pool.isInUse(slot);
     }
 
     public ByteRing readRing(int slot) {
@@ -101,12 +107,28 @@ public final class NioServer implements AutoCloseable {
 
     /** One loop iteration: wait up to {@code timeoutMs} for I/O, handle it, then dispatch ready connections. */
     public void runOnce(long timeoutMs) throws IOException {
-        if (timeoutMs <= 0) {
+        final long wait = Math.min(timeoutMs, handler.maxWaitMs());
+        if (wait <= 0) {
             selector.selectNow(onKey);
         } else {
-            selector.select(onKey, timeoutMs);
+            selector.select(onKey, wait);
         }
         dispatchReady();
+        handler.onTick(this);
+        dispatchReady();
+    }
+
+    /** Sends the staged response bytes and closes the connection once they have all been written. */
+    public void flushAndClose(int slot) {
+        flush(slot);
+        if (!pool.isInUse(slot)) {
+            return;
+        }
+        if (writePending[slot]) {
+            closeAfterWrite[slot] = true;
+        } else {
+            close(slot);
+        }
     }
 
     /** Sends the staged response bytes; if the socket cannot take them all, reading pauses until it drains. */
@@ -132,6 +154,7 @@ public final class NioServer implements AutoCloseable {
         if (!pool.isInUse(slot)) {
             return;
         }
+        handler.onClosed(slot);
         keys[slot].cancel();
         try {
             channels[slot].close();
@@ -141,6 +164,7 @@ public final class NioServer implements AutoCloseable {
         channels[slot] = null;
         keys[slot] = null;
         writePending[slot] = false;
+        closeAfterWrite[slot] = false;
         pool.release(slot);
         if (acceptPaused) {
             acceptPaused = false;
@@ -221,6 +245,10 @@ public final class NioServer implements AutoCloseable {
         }
         out.clear();
         writePending[slot] = false;
+        if (closeAfterWrite[slot]) {
+            close(slot);
+            return;
+        }
         keys[slot].interestOps(SelectionKey.OP_READ);
         if (pool.readRing(slot).readable() > 0) {
             ready.markReady(slot);

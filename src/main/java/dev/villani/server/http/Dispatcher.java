@@ -19,6 +19,11 @@ public final class Dispatcher {
     /** The request was consumed and the response holder is filled (also for errors, 404 and 405). */
     public static final int RESPONSE_READY = 1;
 
+    /** The request was consumed and a handler asked to answer later ({@code response.deferMs}). */
+    public static final int DEFERRED = 2;
+
+    private int deferredHandler;
+    private boolean deferredKeepAlive;
     private final HttpRequestParser parser;
     private final Router router;
     private final Handler[] handlers;
@@ -54,9 +59,36 @@ public final class Dispatcher {
         } else {
             request.bind(parser, ring, slot, router.pathParam());
             handlers[id].handle(request, response);
+            if (response.deferMs() > 0) {
+                deferredHandler = id;
+                deferredKeepAlive = parser.keepAlive(slot);
+                parser.consume(slot, ring);
+                return DEFERRED;
+            }
         }
         response.keepAlive(response.keepAlive() && parser.keepAlive(slot));
         parser.consume(slot, ring);
         return RESPONSE_READY;
+    }
+
+    /** Handler id of the request just deferred; valid right after {@link #process} returned DEFERRED. */
+    public int deferredHandler() {
+        return deferredHandler;
+    }
+
+    /** Keep-alive of the request just deferred (captured before it was consumed). */
+    public boolean deferredKeepAlive() {
+        return deferredKeepAlive;
+    }
+
+    /** Fills {@code response} for a deferred request once its delay elapsed. */
+    public void complete(int slot, int handlerId, boolean requestKeepAlive, HttpResponse response) {
+        response.reset();
+        ((AsyncHandler) handlers[handlerId]).complete(slot, response);
+        response.keepAlive(response.keepAlive() && requestKeepAlive);
+    }
+
+    public void abort(int slot, int handlerId) {
+        ((AsyncHandler) handlers[handlerId]).abort(slot);
     }
 }
