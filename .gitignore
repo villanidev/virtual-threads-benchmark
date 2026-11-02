@@ -37,3 +37,10 @@ nb-configuration.xml
 .github/*
 
 *.Identifier
+
+# k6 load-test outputs
+bench/results/k6-*.json
+bench/results/server-*.txt
+
+# JFR recordings, GC and server logs
+jfr/

@@ -232,6 +232,31 @@ class AgendamentoServerTest {
     }
 
     @Nested
+    @DisplayName("boot warm-up")
+    class WarmUp {
+
+        @Test
+        @DisplayName("given an end-to-end warm-up, when it finishes, then the real server starts with no fake data")
+        void givenWarmUp_whenFinished_thenRealServerIsPristine() throws Exception {
+            // given
+            AgendamentoServer.warmUp(300);
+            start(8, DELAY_MS);
+            startLoop();
+            final Socket s = connect();
+
+            // when
+            send(s, post("Ana", 1, JAN_2 + 3600));
+            final String created = readResponse(s);
+            send(s, "GET /api/agendamentos?data=2026-01-02 HTTP/1.1\r\n\r\n");
+            final String listed = readResponse(s);
+
+            // then
+            assertTrue(created.endsWith("{\"id\":1,\"status\":\"CONFIRMADO\"}"), created);
+            assertFalse(listed.contains("Warm"), listed);
+        }
+    }
+
+    @Nested
     @DisplayName("allocation")
     class Allocation {
 

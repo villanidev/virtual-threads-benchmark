@@ -3,6 +3,10 @@
 # Pins to 1 vCPU, 128m heap, JFR with allocation sampling. Output: jfr/<model>-<N>.jfr
 set -euo pipefail
 cd "$(dirname "$0")"
+if [ "$1" = "server" ]; then
+  # ./run.sh server <N> [vus]  -> real load test of the Agendamento server (see bench/server.sh)
+  exec bash bench/server.sh "$2" "${3:-}"
+fi
 MODEL=$1; N=$2; CPU=${3:-0}
 mkdir -p jfr
 [ -d target/classes/dev/villani/benchmark ] || mvn -q compile
