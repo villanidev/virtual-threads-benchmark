@@ -174,6 +174,22 @@ Leitura:
 - **Achado de configuração**: o `HttpServer` do JDK vem sem `TCP_NODELAY`; headers e body saem em segmentos separados e o delayed-ACK adiciona ~40 ms às respostas com corpo. O `server.sh` usa `-Dsun.net.httpserver.nodelay=true` nas variantes do JDK (sem isso o p50 de leitura era 42 ms).
 - Cuidados: uma execução por célula, laptop com SMT, k6 em CPUs 1-3 (irmã SMT do servidor); a estimativa de alocação do JFR é estatística e `jdk.CPULoad` é relativo ao que a JVM enxerga.
 
+### Heap menor e ZGC (N=20.000, 1 vCPU, RATE 2000, uma execução por célula)
+
+Parâmetros do `server.sh`/`compare.sh`: `HEAP` (MB, padrão 128) e `GC` (`serial|zgc|g1|parallel`; sem ele a JVM escolhe, Serial em 1 vCPU). Os nomes dos arquivos ganham `-h<HEAP>` e `-<GC>`. O `summarize.py` conta GCs pelo JFR, porque o `-Xlog:gc` do ZGC não imprime "Pause". Use um N diferente do `summary.md` versionado para não misturar execuções.
+
+| impl | GCs (carga) | pausa ms | RSS MB | threads |
+|---|---|---|---|---|
+| loop-off, serial, 64m | 5 | 3,5 | 170 | 16 |
+| loop-off, serial, 128m | 1 | 0,2 | 232 | 16 |
+| loop-off, ZGC, 128m | 0 | 0 | 241 | 24 |
+| vt-heap, serial, 128m | 138 | 150,8 | 232 | 21 |
+| vt-heap, ZGC, 128m | 94 | 2,6 | 258 | 30 |
+
+- O RSS cai quase 1:1 com o `-Xms` (pre-touch): 128m para 64m tira ~60 MB, sem mudar a latência do loop-off.
+- ZGC no loop-off não ajuda (não há o que coletar) e custa +10–20 MB de RSS e +8 threads. No vt-heap as pausas somem (2,6 ms), mas o trabalho de GC vira ciclos concorrentes na mesma CPU (94 ciclos, `alloc` maior), então a latência não melhora em 1 vCPU.
+- `-XX:MaxDirectMemorySize` limita só `DirectByteBuffer`; o dimensionamento do container deve partir do RSS medido, não do valor do off-heap.
+
 ## Limitações
 
 - Uma execução por ponto; sem repetições, mediana ou dispersão. As diferenças de tempo entre as variantes flat (1,06–1,14s) e o ganho de tempo do Compact Object Headers não são conclusivos.

@@ -41,13 +41,18 @@ def nmt(path):
     text = open(path).read() if os.path.exists(path) else ""
     total = re.search(r"Total: reserved=\d+KB, committed=(\d+)KB", text)
     heap = re.search(r"Java Heap \(reserved=\d+KB, committed=(\d+)KB", text)
-    return (int(total.group(1)) // 1024 if total else None, int(heap.group(1)) // 1024 if heap else None)
+    def cat(name):
+        m = re.search(rf"\b{name} \(reserved=\d+KB, committed=(\d+)KB", text)
+        return int(m.group(1)) // 1024 if m else 0
+    # NMT "Other" holds DirectByteBuffer and FFM/Unsafe allocations
+    return (int(total.group(1)) // 1024 if total else None, int(heap.group(1)) // 1024 if heap else None,
+            cat("Other"), cat("Thread"), cat("Class") + cat("Code"), cat("Tracing"))
 
 
 def parse(txt):
     head = open(txt).readline()
     info = dict(re.findall(r"(\w+)=(\S*)", head))
-    phases, rss, threads = {}, None, None
+    phases, rss, threads, anon, rfile = {}, None, None, None, None
     for line in open(txt):
         p = line.split()
         if p and p[0] in ("write", "read", "mixed") and len(p) >= 9:
@@ -57,7 +62,10 @@ def parse(txt):
         m = re.search(r"RSS \(KB\): (\d+)\s+threads: (\d+)", line)
         if m:
             rss, threads = int(m.group(1)) // 1024, int(m.group(2))
-    return info, phases, rss, threads
+        m = re.search(r"RssAnon \(KB\): (\d+)\s+RssFile \(KB\): (\d+)", line)
+        if m:
+            anon, rfile = int(m.group(1)) // 1024, int(m.group(2)) // 1024
+    return info, phases, rss, threads, (anon, rfile)
 
 
 def main(n):
@@ -66,11 +74,15 @@ def main(n):
         if txt.endswith(".nmt.txt"):
             continue
         base = txt[:-4]
-        info, phases, rss, threads = parse(txt)
+        info, phases, rss, threads, anon = parse(txt)
         impl, pool = info.get("impl", "?"), info.get("pool", "")
         label = f"{impl} (pool {pool})" if impl.startswith("fixed") else impl
         total_reqs = sum(p["req"] for p in phases.values()) or 1
-        gcs, pause = gc_stats(base + ".gc.log")
+        # ZGC logs no "Pause" lines, so GC counts come from JFR for every collector
+        all_gcs = jfr_events(base + ".jfr", "jdk.GarbageCollection")
+        gcs, pause = len(all_gcs), 0
+        if info.get("heap", "128") != "128" or info.get("gc", "default") != "default":
+            label += f" [{info.get('gc', 'default')}, {info.get('heap', '128')}m]"
         # load window = after the "# ... <timestamp>" header, i.e. after boot and warm-up
         start = open(txt).readline().split()[-1]
         end = next(l.split()[-1] for l in open(txt) if l.startswith("# load-end"))
@@ -80,9 +92,9 @@ def main(n):
         gcs_load, pause_load = len(load_gcs), sum(iso_seconds(e["values"].get("sumOfPauses")) for e in load_gcs) * 1000
         cpu_events = within(jfr_events(base + ".jfr", "jdk.CPULoad"), start, end)
         cpu = sum(e["values"]["jvmUser"] + e["values"]["jvmSystem"] for e in cpu_events) / max(1, len(cpu_events))
-        committed, heap = nmt(base + ".nmt.txt")
+        committed, heap, other, thr, codecls, jfrm = nmt(base + ".nmt.txt")
         runs.append((ORDER.index(impl) if impl in ORDER else 99, int(pool or 0) * -1, label, info, phases,
-                     rss, threads, gcs, pause, alloc, total_reqs, cpu, committed, heap, gcs_load, pause_load))
+                     rss, threads, gcs, pause, alloc, total_reqs, cpu, committed, heap, gcs_load, pause_load, (other, thr, codecls, jfrm, anon)))
     runs.sort(key=lambda r: (r[0], r[1]))
     first = runs[0][3] if runs else {}
     print("# Comparison: concurrency model x memory layout (step 11)\n")
@@ -103,9 +115,17 @@ def main(n):
           "| heap committed MB | NMT total committed MB | RSS MB | threads | JVM CPU (load) |")
     print("|---|---|---|---|---|---|---|---|---|---|---|")
     for r in runs:
-        _, _, label, _, _, rss, threads, gcs, pause, alloc, reqs, cpu, committed, heap, gcs_load, pause_load = r
+        _, _, label, _, _, rss, threads, gcs, pause, alloc, reqs, cpu, committed, heap, gcs_load, pause_load, extra = r
         print(f"| {label} | {gcs_load} | {pause_load:.1f} | {gcs - gcs_load} | {alloc / 1e6:.1f} | "
               f"{alloc / reqs / 1e3:.2f} | {heap} | {committed} | {rss} | {threads} | {cpu * 100:.1f}% |")
+    print("\n## Where the memory goes (MB, after the load)\n")
+    print("| impl | heap | off-heap data (NMT Other: direct/FFM) | thread stacks | class+code | JFR | RssAnon | RssFile | RSS |")
+    print("|---|---|---|---|---|---|---|---|---|")
+    for r in runs:
+        other, thr, codecls, jfrm, (anon, rfile) = r[-1]
+        print(f"| {r[2]} | {r[13]} | {other} | {thr} | {codecls} | {jfrm} | {anon} | {rfile} | {r[5]} |")
+    print("\nSizing: `MaxDirectMemorySize` ~ peak of NMT Other (+20-30%); container limit ~ RSS peak + margin. "
+          "RssAnon = heap + off-heap + malloc; RssFile = mapped code/libs.")
     print("\n`dropped` = iterations k6 could not start on time (open model): the server fell behind the offered rate.")
     print("Allocation is the JFR `ObjectAllocationSample` weight (a statistical estimate, load window only).")
 
