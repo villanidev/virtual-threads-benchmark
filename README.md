@@ -243,7 +243,20 @@ Os intervalos de p99 se sobrepõem, então "ffm sempre pior" era ruído. O únic
 - `JsonRecord`: antes 4 arrays na heap por instância; agora flyweight sobre um slab off-heap único do `JsonRecordPool`, com layout por schema (`JsonRecordLayout`).
 - Pós-struct (3 reps, loop-off): p99 write 21,85 (direct) / 22,45 (ffm), p99 read 0,86 / 0,90, RSS 234 / 242 MB, ou seja, sem regressão.
 - JFR (`ObjectAllocationSample`): as amostras e os 13 GCs ficam nos ~3 s de warm-up (`BufferedInputStream`, `readNBytes`, `Socket.getRemoteSocketAddress`, do cliente de warm-up); **zero amostras e zero GCs durante a carga**, nos dois backends.
-- Tamanhos: JSON/HTTP continuam fora do escopo do struct (candidatos só parciais).
+- JSON/HTTP continuam fora do escopo do struct (candidatos só parciais).
+
+**Cenário saturado** (`DELAY_MS=1 RATE=8000 ./run.sh repeat 60000 3`, `results/repeat/summary-saturated.md`; mediana [min..max]):
+
+| impl | mem | p50 write | p99 write | p99 read | RSS MB |
+|---|---|---|---|---|---|
+| loop-off | direct | 1,40 | 7,4 [5,9..7,6] | 6,4 | 237 |
+| loop-off | ffm | 1,44 | 8,6 [8,3..10,0] | 9,7 | 246 |
+| vt-off | direct | 1,52 | 21,1 [14,2..24,0] | 18,8 | 261 |
+| vt-off | ffm | 1,55 | 15,3 [14,1..23,7] | 10,3 | 256 |
+
+- Sem o delay de 20 ms escondendo a espera, o modelo aparece: o loop-off tem p99 de 7–9 ms contra 15–21 ms do vt-off, e o vt-off varia muito mais (até 59 ms no mixed).
+- No loop-off o ffm ficou um pouco pior (p99 write +1,2 ms, read +3,3 ms), coerente com o custo de acesso do JMH e o +8 MB de RSS, mas são só 3 repetições. No vt-off a ordem se inverte dentro de faixas largas, então é ruído de agendamento.
+- Para confirmar o ffm pior no loop-off seriam necessárias mais repetições (~5) e uma taxa maior.
 
 ## Limitações
 
