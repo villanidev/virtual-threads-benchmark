@@ -258,11 +258,81 @@ Os intervalos de p99 se sobrepõem, então "ffm sempre pior" era ruído. O únic
 - No loop-off o ffm ficou um pouco pior (p99 write +1,2 ms, read +3,3 ms), coerente com o custo de acesso do JMH e o +8 MB de RSS, mas são só 3 repetições. No vt-off a ordem se inverte dentro de faixas largas, então é ruído de agendamento.
 - Para confirmar o ffm pior no loop-off seriam necessárias mais repetições (~5) e uma taxa maior.
 
+## Ciclo 3: GraalVM native-image (estático)
+
+GraalVM CE 25.0.2, `--gc=serial -O3`, sem PGO (só Oracle GraalVM). `bench/native-build.sh [flat|baseline]` gera `target/native/{agendamento,baseline}`; `LINK=musl` (padrão, `--static --libc=musl`) ou `LINK=mostly` (`--static-nolibc`, glibc dinâmica), `OPT=` troca o nível. `NATIVE=1` no `server.sh` e células `impl:mem[:musl|mostly]` no `repeat.sh` rodam com os mesmos `-Xmx/-Xms128m` e `taskset` de 1 vCPU (sem JFR/NMT; RSS via `/proc`). Resultados: `results/repeat/summary-o3.md` (2000/s, delay 20 ms) e `summary-o3-saturated.md` (8000/s, delay 1 ms), 3 repetições. Os `summary-native*.md` são a rodada antiga (`-O2`, FFM).
+
+**Backends em imagem nativa**
+- **FFM `MemorySegment` é lento em nativo**, e não por causa do downcall (issue [graal#12219](https://github.com/oracle/graal/issues/12219) trata do custo de *downcall*): num micro com 4 acessos a uma `Region` por iteração, `ffm` ≈ 470 ns, `direct` ≈ 13 ns, `native` ≈ 6,7 ns (na JVM o ffm é só ~2x o direct). `VarHandle` `static final` não ajudou.
+- **`NativeRegion`** (`-Dflat.memory=native`, só em imagem): `UnmanagedMemory.calloc` + `Pointer.readInt/writeInt` do Native Image SDK (Word API). Limitado a <2 GB, sem free.
+- **`NativeAffinity`**: `@CFunction` para `sched_setaffinity`/`sched_getaffinity`. Resolvido em link estático, então o **pin funciona em imagem estática musl** (o FFM `defaultLookup()` falha com `libc.so.6`). SDK `provided`, só referenciado dessas duas classes.
+- **Jackson (vt-heap)** precisa de reflection config nos records de `HeapController` (`bench/native/.../reachability-metadata.json`).
+
+**Cenário 2000/s (mediana, loop-off):**
+
+| variante | RSS MB | p50 read ms | p99 read ms | p99 write ms |
+|---|---|---|---|---|
+| JVM direct | 237 | 0,20 | 1,24 | 22,1 |
+| musl direct | 70 | 0,25 | 1,44 | 22,0 |
+| musl **native** | **47** | 0,24 | **0,95** | 22,0 |
+| mostly direct | 74 | 0,25 | 1,39 | 21,7 |
+| mostly native | 50 | 0,24 | 1,33 | 23,0 |
+
+vt-off: RSS 260 (JVM) → 44 direct / **40 native** (musl); p50 read 0,28 → 0,34, p99 2,7 → 2,7. vt-heap (Jackson sem JIT): p50 read 0,35 → 0,48 e p99 write 24 → 36 ms, pior que a JVM.
+
+**Cenário saturado (8000/s, delay 1 ms):** muito ruidoso (faixas min..max largas). loop-off fica na mesma ordem da JVM (p50 read 1–3 ms, p99 30–40 ms, exceto 1 outlier musl native 65 ms); vt-off nativo é pior em leitura (p50 ~37 ms contra 8 ms na JVM) e vt-heap também (p50 read 59–65 contra 31 ms).
+
+Conclusões:
+- **Memória:** RSS cai de 235–260 MB para 40–75 MB; `NativeRegion` é o menor (47–50 MB loop-off). Parte da queda é ausência de `AlwaysPreTouch`. Binário de 17–22 MB.
+- **`-O3` + `NativeRegion` empata com a JVM** em baixa carga no loop-off (p50 0,24 vs 0,20, p99 read igual ou melhor) com ~5x menos RSS. Sob saturação o nativo sem JIT/PGO não vence a JVM.
+- **musl vs mostly-static:** latência equivalente dentro do ruído; musl usa ~3–4 MB menos RSS e não depende de glibc no destino. Mostly só se justifica se precisar de recursos da glibc (DNS/NSS, `dlopen`).
+- **Evitar FFM em nativo**; use `direct` ou `native` (`@CFunction`/Word API).
+- **Boot:** a coluna "boot to listening" inclui warm-up com resolução de 1 s; não serve como boot frio.
+
+### Sem pre-touch, GC e sem warm-up (loop-off flat, delay 1 ms, 8000/s, N=60000, 3 reps)
+
+`PRETOUCH=` (vazio) desliga `-XX:+AlwaysPreTouch` no `server.sh`; `WARM=0` desliga o warm-up; `NATIVE_JFR=1` usa `target/native/agendamento-jfr` (build com `NI_EXTRA=--enable-monitoring=jfr BIN_SUFFIX=-jfr`) com `-XX:+PrintGC -XX:+VerboseGC` e JFR. Resultados: `results/repeat/summary-nopretouch.md` (com warm-up) e `summary-nowarm.md`.
+
+| variante | RSS MB (warm → sem warm) | p50 read ms | p99 write ms (warm → sem warm) |
+|---|---|---|---|
+| JVM direct | 145 → 108 | 0,18 → 0,18 | 8,0 → 12,8 |
+| musl direct | 70 → 30 | 0,24 → 0,23 | 6,4 → 6,3 |
+| musl native | 49 → **21** | 0,22 → 0,22 | 6,9 → 5,9 |
+
+- Sem pre-touch a JVM cai de ~237 para 145 MB; o nativo continua ~3x menor.
+- **Warm-up:** no nativo a latência não muda (sem curva de aquecimento no AOT). Na JVM o p50 não muda, mas o p99 de escrita sobe (~8 → ~12,8 ms), compatível com o JIT ainda compilando.
+- **GC:** com warm-up há 13 pausas na JVM (Young, 0,25-8 ms) e 16 no nativo (Incremental 0,3-0,8 ms, Full 0,8-2,8 ms), todas nos primeiros ~2-3,4 s, antes da carga. Com `WARM=0` há zero pausas e zero eventos `jdk.GarbageCollection` (JVM e nativo). Durante a carga não há GC.
+- O RSS baixo do nativo sem warm-up (21 MB) vem de o warm-up tocar ~30 MB de eden com dados falsos.
+- Limitações: 3 repetições (1 com JFR no nativo, só para GC), k6 na mesma máquina; JFR ligado altera um pouco a latência, então ela não foi comparada.
+
+## Conclusão (ciclos 1-3)
+
+**Ciclo 1: modelos de concorrência (1 vCPU, 128 MB)**
+- Virtual threads e cached pool escalam; o fixed pool é limitado pelo tamanho do pool (200 s para 100 mil tarefas). Virtual threads ficam em ~1,1 s para 1.000, 10.000 e 100.000 tarefas.
+- Sob escassez de CPU, o que importa é o custo de agendar e de alocar, não o número de threads.
+
+**Ciclo 2: servidor flat, zero alocação, off-heap**
+- O loop NIO single-thread (`loop-off`) tem a melhor cauda, e o pin em 1 vCPU elimina a disputa.
+- Com off-heap, `StructLayout` e pooling, o JFR mostra zero alocação durante a carga.
+- `direct` (`ByteBuffer`) fica ligeiramente à frente do FFM na JVM; o FFM é eficiente mesmo assim.
+- O `AlwaysPreTouch` explica ~90 MB do RSS: sem ele a JVM vai de 237 para ~145 MB.
+
+**Ciclo 3: GraalVM native-image**
+- Imagens estáticas musl e `-O3` funcionam, e o pin funciona via `@CFunction`.
+- O FFM `MemorySegment` é lento em nativo (~470 ns contra ~13 ns do `direct` no micro). A causa é o acesso ao segmento, não o downcall da issue #12219. O `NativeRegion` (Word API) é o backend certo em nativo (~6,7 ns).
+- RSS do loop-off nativo: 21-49 MB, contra 108-145 MB na JVM sem pre-touch.
+- A latência empata com a JVM aquecida no loop-off, e o nativo não precisa de warm-up. O GC não pausa durante a carga em nenhum dos dois.
+- Sob saturação, ou com Jackson e virtual threads, o nativo sem PGO perde para o JIT. Musl e mostly-static são equivalentes em latência.
+
+**Limites do estudo:** 1 vCPU, k6 na mesma máquina e 3 repetições (diferenças abaixo de ~1 ms não são conclusivas); PGO (Oracle GraalVM) não testado; boot frio não medido com resolução fina.
+
+**Ponto de partida para o io_uring:** `loop-off` flat com `NativeRegion` em musl estático (menor RSS, pin via `@CFunction` já funciona).
+
 ## Limitações
 
 - Uma execução por ponto; sem repetições, mediana ou dispersão. As diferenças de tempo entre as variantes flat (1,06–1,14s) e o ganho de tempo do Compact Object Headers não são conclusivos.
 - O servidor flat do ciclo 2 aloca por conexão (JDK NIO) e fecha a conexão se a resposta não couber no buffer de escrita; a lista é truncada pela capacidade do corpo.
-- Sem GraalVM e imagens nativas. Epoll fora de escopo; io_uring é o candidato para I/O assíncrono real.
+- Epoll fora de escopo; io_uring é o candidato para I/O assíncrono real.
 
 ## Próximo ciclo
 

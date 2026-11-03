@@ -36,6 +36,18 @@
           <version>1.37</version>
           <scope>test</scope>
       </dependency>
+      <dependency>
+          <groupId>org.graalvm.sdk</groupId>
+          <artifactId>nativeimage</artifactId>
+          <version>25.0.2</version>
+          <scope>provided</scope>
+      </dependency>
+      <dependency>
+          <groupId>org.graalvm.sdk</groupId>
+          <artifactId>word</artifactId>
+          <version>25.0.2</version>
+          <scope>provided</scope>
+      </dependency>
   </dependencies>
   <build>
     <plugins>

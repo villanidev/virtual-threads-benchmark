@@ -17,19 +17,27 @@ public final class CpuAffinity {
     public static final String PROPERTY = "flat.pin";
 
     private static final int MASK_BYTES = 128; // cpu_set_t: 1024 bits
+    // In a native image the FFM downcall is unavailable on static musl (no libc.so.6) and slow elsewhere: use @CFunction.
+    private static final boolean IN_IMAGE = dev.villani.server.memory.Regions.inNativeImage();
     private static final MethodHandle SET;
     private static final MethodHandle GET;
 
     static {
         MethodHandle set = null;
         MethodHandle get = null;
-        if (System.getProperty("os.name", "").toLowerCase().contains("linux")) {
-            final Linker linker = Linker.nativeLinker();
-            final var lookup = linker.defaultLookup();
-            final FunctionDescriptor fd = FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
-                    ValueLayout.JAVA_LONG, ValueLayout.ADDRESS);
-            set = lookup.find("sched_setaffinity").map(a -> linker.downcallHandle(a, fd)).orElse(null);
-            get = lookup.find("sched_getaffinity").map(a -> linker.downcallHandle(a, fd)).orElse(null);
+        if (System.getProperty("os.name", "").toLowerCase().contains("linux") && !IN_IMAGE) {
+            try {
+                final Linker linker = Linker.nativeLinker();
+                final var lookup = linker.defaultLookup();
+                final FunctionDescriptor fd = FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_LONG, ValueLayout.ADDRESS);
+                set = lookup.find("sched_setaffinity").map(a -> linker.downcallHandle(a, fd)).orElse(null);
+                get = lookup.find("sched_getaffinity").map(a -> linker.downcallHandle(a, fd)).orElse(null);
+            } catch (Throwable t) {
+                // e.g. a static musl native image has no libc.so.6 to look symbols up in
+                set = null;
+                get = null;
+            }
         }
         SET = set;
         GET = get;
@@ -39,7 +47,7 @@ public final class CpuAffinity {
     }
 
     public static boolean supported() {
-        return SET != null && GET != null;
+        return IN_IMAGE ? NativeAffinity.supported() : SET != null && GET != null;
     }
 
     /** Pins the calling (platform) thread to {@code cpu}. */
@@ -49,6 +57,10 @@ public final class CpuAffinity {
         }
         if (cpu < 0 || cpu >= MASK_BYTES * 8) {
             throw new IllegalArgumentException("cpu out of range: " + cpu);
+        }
+        if (IN_IMAGE) {
+            NativeAffinity.pin(cpu);
+            return;
         }
         try (Arena arena = Arena.ofConfined()) {
             final MemorySegment mask = arena.allocate(MASK_BYTES);
@@ -68,6 +80,9 @@ public final class CpuAffinity {
     public static long currentMask() {
         if (!supported()) {
             throw new UnsupportedOperationException("sched_getaffinity is only available on Linux");
+        }
+        if (IN_IMAGE) {
+            return NativeAffinity.currentMask();
         }
         try (Arena arena = Arena.ofConfined()) {
             final MemorySegment mask = arena.allocate(MASK_BYTES);
