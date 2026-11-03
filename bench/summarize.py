@@ -81,8 +81,15 @@ def main(n):
         # ZGC logs no "Pause" lines, so GC counts come from JFR for every collector
         all_gcs = jfr_events(base + ".jfr", "jdk.GarbageCollection")
         gcs, pause = len(all_gcs), 0
+        extra = []
         if info.get("heap", "128") != "128" or info.get("gc", "default") != "default":
-            label += f" [{info.get('gc', 'default')}, {info.get('heap', '128')}m]"
+            extra.append(f"{info.get('gc', 'default')}, {info.get('heap', '128')}m")
+        if info.get("mem", "direct") != "direct":
+            extra.append(info["mem"])
+        if info.get("pin", "none") != "none":
+            extra.append("pin " + info["pin"])
+        if extra:
+            label += " [" + ", ".join(extra) + "]"
         # load window = after the "# ... <timestamp>" header, i.e. after boot and warm-up
         start = open(txt).readline().split()[-1]
         end = next(l.split()[-1] for l in open(txt) if l.startswith("# load-end"))

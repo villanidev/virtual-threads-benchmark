@@ -1,5 +1,8 @@
 package dev.villani.server.json;
 
+import dev.villani.server.memory.Region;
+import dev.villani.server.memory.Regions;
+
 import java.nio.charset.StandardCharsets;
 
 /**
@@ -65,7 +68,17 @@ public final class JsonSchema {
         return maxNameLength;
     }
 
+    /** A standalone record with its own Region (the pool uses {@link #newRecord(Region, long, JsonRecordLayout)}). */
     public JsonRecord newRecord() {
-        return new JsonRecord(this);
+        final JsonRecordLayout layout = layout();
+        return new JsonRecord(this, layout, Regions.allocate(layout.size()), 0);
+    }
+
+    JsonRecord newRecord(Region slab, long base, JsonRecordLayout layout) {
+        return new JsonRecord(this, layout, slab, base);
+    }
+
+    JsonRecordLayout layout() {
+        return new JsonRecordLayout(fields, stringBytes);
     }
 }

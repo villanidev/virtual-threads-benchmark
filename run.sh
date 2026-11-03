@@ -7,6 +7,16 @@ if [ "$1" = "server" ]; then
   # ./run.sh server <N> [vus]  -> real load test of the Agendamento server (see bench/server.sh)
   exec bash bench/server.sh "$2" "${3:-}"
 fi
+if [ "$1" = "repeat" ]; then
+  # ./run.sh repeat [N] [reps] -> loop-off/vt-off x direct/ffm repeated, median/min/max (see bench/repeat.sh)
+  exec bash bench/repeat.sh "${2:-40000}" "${3:-5}"
+fi
+if [ "$1" = "jmh" ]; then
+  # ./run.sh jmh [JMH args] -> access microbenchmark (Region direct/ffm, raw ByteBuffer, StructLayout) pinned to CPU 0
+  mvn -q test-compile && mvn -q dependency:build-classpath -Dmdep.includeScope=test -Dmdep.outputFile=target/test-classpath.txt >/dev/null
+  shift
+  exec taskset -c 0 java -cp "target/test-classes:target/classes:$(cat target/test-classpath.txt)" --enable-native-access=ALL-UNNAMED org.openjdk.jmh.Main "${@:-AccessBench}"
+fi
 if [ "$1" = "compare" ]; then
   # ./run.sh compare <N> [vus]  -> concurrency x memory matrix under the same k6 load (see bench/compare.sh)
   exec bash bench/compare.sh "$2" "${3:-}"

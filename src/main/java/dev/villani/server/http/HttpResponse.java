@@ -1,5 +1,7 @@
 package dev.villani.server.http;
 
+import dev.villani.server.memory.Regions;
+
 import java.nio.ByteBuffer;
 
 /**
@@ -18,7 +20,7 @@ public final class HttpResponse {
     private int deferMs;
 
     public HttpResponse(int bodyCapacity) {
-        this.body = ByteBuffer.allocateDirect(bodyCapacity);
+        this.body = Regions.allocateBuffer(bodyCapacity);
     }
 
     public void reset() {

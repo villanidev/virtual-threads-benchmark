@@ -26,7 +26,7 @@ public final class ConnectionPool {
     private final ByteBuffer slab;
     private final ByteRing[] readRings;
     private final ByteBuffer[] writeViews;
-    private final ByteBuffer inUse; // 1 byte per slot, off-heap
+    private final Region inUse; // 1 byte per slot, off-heap
     private final IntRing free;
     private int active;
 
@@ -42,10 +42,10 @@ public final class ConnectionPool {
         if (total > Integer.MAX_VALUE) {
             throw new IllegalArgumentException("slab too large: " + total);
         }
-        this.slab = ByteBuffer.allocateDirect((int) total).order(ByteOrder.nativeOrder());
+        this.slab = Regions.allocateBuffer((int) total);
         this.readRings = new ByteRing[capacity];
         this.writeViews = new ByteBuffer[capacity];
-        this.inUse = ByteBuffer.allocateDirect(capacity);
+        this.inUse = Regions.allocate(capacity);
         this.free = new IntRing(capacity);
         final int stride = readBytes + writeBytes;
         for (int i = 0; i < capacity; i++) {

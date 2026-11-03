@@ -190,6 +190,61 @@ Parâmetros do `server.sh`/`compare.sh`: `HEAP` (MB, padrão 128) e `GC` (`seria
 - ZGC no loop-off não ajuda (não há o que coletar) e custa +10–20 MB de RSS e +8 threads. No vt-heap as pausas somem (2,6 ms), mas o trabalho de GC vira ciclos concorrentes na mesma CPU (94 ciclos, `alloc` maior), então a latência não melhora em 1 vCPU.
 - `-XX:MaxDirectMemorySize` limita só `DirectByteBuffer`; o dimensionamento do container deve partir do RSS medido, não do valor do off-heap.
 
+## Passo 12: backend FFM (`MemorySegment`) e thread affinity
+
+- **`server.memory.Region`**: interface mínima de memória off-heap (`get/put`, `getInt/putInt`, `getLong/putLong`, `asByteBuffer()`), com dois backends: `DirectRegion` (`ByteBuffer.allocateDirect`) e `FfmRegion` (`Arena.global().allocate` + `MemorySegment`). `Regions` escolhe por `-Dflat.memory=direct|ffm` (padrão `direct`). As estruturas de dados (`AgendamentoTable`, `IntRing`, `ReadyQueue`, flags do `ConnectionPool`) usam os acessores; os buffers de I/O (slab de conexões, corpo da resposta, rings por requisição) usam `Regions.allocateBuffer`, uma view `ByteBuffer` sobre a mesma memória, porque o NIO só aceita `ByteBuffer`.
+- **`server.os.CpuAffinity`**: `sched_setaffinity` via FFM (`Linker.nativeLinker()`, sem JNI nem biblioteca extra), para a thread que chama. `-Dflat.pin=<cpu>` faz o `AgendamentoServer` pinar a thread do loop no boot. Diferente do `taskset`, só a thread do loop fica presa; GC, JIT e JFR podem usar outras CPUs (só faz diferença com 2+ CPUs).
+- `server.sh`/`compare.sh`: `MEM_API=direct|ffm` e `PIN=<cpu>` (precisa estar dentro de `SERVER_CPU`); os nomes dos arquivos ganham `-ffm` e `-pin<cpu>`. Testes: `mvn test` e `mvn test -DargLine="-Dflat.memory=ffm --enable-native-access=ALL-UNNAMED"` (167 testes verdes nos dois).
+
+Resultado (1 vCPU, 128m, RATE 2000, N=40000, uma execução por célula):
+
+| impl | p99 write ms | p99 read ms | GCs (carga) | NMT Other MB | RSS MB |
+|---|---|---|---|---|---|
+| loop-off direct | 21,9 | 0,74 | 0 | 34 | 236 |
+| loop-off ffm | 22,4 | 0,96 | 0 | 34 | 247 |
+| loop-off ffm + pin 0 | 22,6 | 0,93 | 1 | 34 | 249 |
+| vt-off direct | 23,3 | 1,18 | 48 | 34 | 254 |
+| vt-off ffm | 23,5 | 1,77 | 49 | 34 | 259 |
+
+- **Sem diferença de alocação nem de memória de dados**: o FFM não alocou mais no heap (0 GCs no loop-off) e os dados ocupam os mesmos 34 MB (NMT `Other`). O FFM **não** entra no `BufferPool direct` nem no `MaxDirectMemorySize`; só no NMT e no RSS.
+- **RSS +5–11 MB** com FFM (infraestrutura do linker e dos `MethodHandle`s). O p50 é igual; as diferenças de p99 estão no ruído de uma execução.
+- **Pin com 1 CPU é no-op**: o resultado valida o mecanismo (a thread foi pinada), mas o ganho só aparece com 2+ CPUs, ainda por medir.
+
+### Passo 12b: repetições, JMH e struct layout
+
+Uma execução só não separa efeito de ruído, então: `./run.sh repeat [N] [reps]` (env `CELLS`; mediana [min..max], `results/repeat/summary.md`) e `./run.sh jmh` (`AccessBench`, fixado na CPU 0).
+
+**JMH, custo de acesso (ns/op, 2 forks)**: 256 registros (quente, L1) / 200000 (frio, 12,8 MB).
+
+| acesso | quente | frio |
+|---|---|---|
+| `ByteBuffer` direto | 7,5 | ~31,5 |
+| `MemorySegment`, offsets manuais | 7,6 | 31,7 |
+| `MemorySegment` + `StructLayout`/`VarHandle` | 7,4 | ~29,4 |
+| `Region` direct | 7,55 | 31,7 |
+| `Region` ffm | 7,8 | 33,4 |
+
+O custo é dominado por cache miss; as APIs empatam (ffm ≈ +0,25 ns quente, +1,7 ns frio, ~2σ).
+
+**5 repetições (N=40000, mediana)**:
+
+| impl | mem | p99 write | p99 read | RSS MB |
+|---|---|---|---|---|
+| loop-off | direct | 22,55 | 1,11 | 234 |
+| loop-off | ffm | 22,67 | 0,96 | 242 |
+| vt-off | direct | 23,46 | 1,31 | 258 |
+| vt-off | ffm | 23,38 | 1,41 | 260 |
+
+Os intervalos de p99 se sobrepõem, então "ffm sempre pior" era ruído. O único custo consistente é **RSS +8 MB no loop-off** (infraestrutura FFM, causa não verificada).
+
+**Struct layout** (`AgendamentoTable` e `JsonRecord`):
+- O `StructLayout` dá clareza e segurança (offsets calculados, sem números mágicos), **não velocidade**: o JMH mostra empate com offsets manuais. Os offsets saem do layout como `static final int` e o acesso passa pelo `Region`, então um código só serve aos dois backends (`DirectByteBuffer` não tem `StructLayout`).
+- `AgendamentoTable`: registro de 64 B declarado como struct, offsets idênticos aos anteriores.
+- `JsonRecord`: antes 4 arrays na heap por instância; agora flyweight sobre um slab off-heap único do `JsonRecordPool`, com layout por schema (`JsonRecordLayout`).
+- Pós-struct (3 reps, loop-off): p99 write 21,85 (direct) / 22,45 (ffm), p99 read 0,86 / 0,90, RSS 234 / 242 MB, ou seja, sem regressão.
+- JFR (`ObjectAllocationSample`): as amostras e os 13 GCs ficam nos ~3 s de warm-up (`BufferedInputStream`, `readNBytes`, `Socket.getRemoteSocketAddress`, do cliente de warm-up); **zero amostras e zero GCs durante a carga**, nos dois backends.
+- Tamanhos: JSON/HTTP continuam fora do escopo do struct (candidatos só parciais).
+
 ## Limitações
 
 - Uma execução por ponto; sem repetições, mediana ou dispersão. As diferenças de tempo entre as variantes flat (1,06–1,14s) e o ganho de tempo do Compact Object Headers não são conclusivos.

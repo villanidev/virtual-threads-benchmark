@@ -6,7 +6,9 @@ import dev.villani.server.http.HttpConnectionHandler;
 import dev.villani.server.http.HttpRequestParser;
 import dev.villani.server.http.HttpResponse;
 import dev.villani.server.memory.ConnectionPool;
+import dev.villani.server.memory.Regions;
 import dev.villani.server.net.NioServer;
+import dev.villani.server.os.CpuAffinity;
 import dev.villani.server.time.TimerWheel;
 
 import java.io.IOException;
@@ -79,6 +81,8 @@ public final class AgendamentoServer implements AutoCloseable {
         final int port = args.length > 0 ? Integer.parseInt(args[0]) : 8080;
         final int delayMs = args.length > 1 ? Integer.parseInt(args[1]) : 20;
         final int warm = args.length > 2 ? Integer.parseInt(args[2]) : 0;
+        final int pinned = CpuAffinity.pinFromProperty();
+        System.out.println("memory=" + Regions.mode() + (pinned >= 0 ? " pinned-to-cpu=" + pinned : ""));
         if (warm > 0) {
             final long t0 = System.nanoTime();
             warmUp(warm);

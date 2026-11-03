@@ -9,6 +9,7 @@ import dev.villani.server.json.JsonRecord;
 import dev.villani.server.json.JsonRecordPool;
 import dev.villani.server.json.JsonSchema;
 import dev.villani.server.json.JsonWriter;
+import dev.villani.server.memory.Regions;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -26,7 +27,7 @@ public final class CriarAgendamentoHandler implements AsyncHandler {
     private final JsonBinder binder;
     private final DelayPolicy delay;
     private final JsonRecord[] inFlight;
-    private final ByteBuffer nomeScratch = ByteBuffer.allocateDirect(AgendamentoTable.MAX_NOME);
+    private final ByteBuffer nomeScratch = Regions.allocateBuffer(AgendamentoTable.MAX_NOME);
     private final int fNome;
     private final int fServico;
     private final int fDataHora;

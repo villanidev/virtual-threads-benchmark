@@ -1,6 +1,12 @@
 package dev.villani.server.json;
 
-/** Fixed set of records preallocated at startup; acquire/release never allocate. */
+import dev.villani.server.memory.Region;
+import dev.villani.server.memory.Regions;
+
+/**
+ * Fixed set of records preallocated at startup; acquire/release never allocate. All record states share one
+ * off-heap slab (record i at offset i * recordSize); the Java objects are just flyweights over it.
+ */
 public final class JsonRecordPool {
 
     private final JsonRecord[] free;
@@ -8,8 +14,10 @@ public final class JsonRecordPool {
 
     public JsonRecordPool(JsonSchema schema, int size) {
         free = new JsonRecord[size];
+        final JsonRecordLayout layout = schema.layout();
+        final Region slab = Regions.allocate((long) size * layout.size());
         for (int i = 0; i < size; i++) {
-            free[i] = schema.newRecord();
+            free[i] = schema.newRecord(slab, (long) i * layout.size(), layout);
         }
         freeCount = size;
     }

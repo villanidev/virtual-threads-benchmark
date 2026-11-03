@@ -47,3 +47,4 @@ jfr/
 
 # comparison raw outputs (summary.md is versioned)
 results/compare/raw/
+results/repeat/raw/

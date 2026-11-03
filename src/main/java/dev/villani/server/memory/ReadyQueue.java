@@ -1,8 +1,5 @@
 package dev.villani.server.memory;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-
 /**
  * FIFO of slots that are ready to be processed. A slot appears at most once: marking a slot that is already
  * queued is a no-op, so repeated readiness notifications from the selector never overflow the queue.
@@ -18,7 +15,7 @@ public final class ReadyQueue {
     public static final int NONE = -1;
 
     private final IntRing ring;
-    private final ByteBuffer queued;
+    private final Region queued;
     private final int slots;
 
     public ReadyQueue(int slots) {
@@ -27,7 +24,7 @@ public final class ReadyQueue {
         }
         this.slots = slots;
         this.ring = new IntRing(slots);
-        this.queued = ByteBuffer.allocateDirect(slots).order(ByteOrder.nativeOrder());
+        this.queued = Regions.allocate(slots);
     }
 
     /** @return true if the slot was enqueued, false if it was already queued */

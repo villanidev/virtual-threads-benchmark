@@ -1,8 +1,5 @@
 package dev.villani.server.memory;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-
 /**
  * Fixed-capacity FIFO ring of ints stored off-heap. Single-threaded (event loop only), no per-op allocation.
  * Capacity is rounded up to a power of two so wrap-around is a mask.
@@ -15,7 +12,7 @@ public final class IntRing {
      * É single-thread, sem atomics
      */
 
-    private final ByteBuffer data;
+    private final Region data;
     private final int mask;
     private int head;
     private int size;
@@ -23,7 +20,7 @@ public final class IntRing {
     public IntRing(int minCapacity) {
         int cap = Integer.highestOneBit(Math.max(2, minCapacity) - 1) << 1;
         this.mask = cap - 1;
-        this.data = ByteBuffer.allocateDirect(cap * Integer.BYTES).order(ByteOrder.nativeOrder());
+        this.data = Regions.allocate((long) cap * Integer.BYTES);
     }
 
     public int capacity() {

@@ -6,6 +6,7 @@ import dev.villani.server.json.JsonBinder;
 import dev.villani.server.json.JsonRecord;
 import dev.villani.server.json.JsonSchema;
 import dev.villani.server.memory.ByteRing;
+import dev.villani.server.memory.Regions;
 
 import java.nio.ByteBuffer;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -22,12 +23,12 @@ final class RequestContext {
 
     final byte[] inArray = new byte[IN_BYTES + 1];
     final ByteBuffer inStaging = ByteBuffer.wrap(inArray);
-    final ByteRing ring = new ByteRing(ByteBuffer.allocateDirect(IN_BYTES));
+    final ByteRing ring = new ByteRing(Regions.allocateBuffer(IN_BYTES));
     final JsonBinder binder;
     final JsonRecord record;
-    final ByteBuffer body = ByteBuffer.allocateDirect(OUT_BYTES);
+    final ByteBuffer body = Regions.allocateBuffer(OUT_BYTES);
     final byte[] outArray = new byte[OUT_BYTES];
-    final ByteBuffer nome = ByteBuffer.allocateDirect(AgendamentoTable.MAX_NOME);
+    final ByteBuffer nome = Regions.allocateBuffer(AgendamentoTable.MAX_NOME);
     final byte[] date = new byte[10];
 
     private RequestContext(JsonSchema schema) {

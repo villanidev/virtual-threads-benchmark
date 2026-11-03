@@ -1,7 +1,12 @@
 package dev.villani.application.agendamento;
 
+import java.lang.foreign.MemoryLayout;
+import java.lang.foreign.MemoryLayout.PathElement;
+import java.lang.foreign.StructLayout;
+import java.lang.foreign.ValueLayout;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
+import dev.villani.server.memory.Region;
+import dev.villani.server.memory.Regions;
 
 /**
  * Off-heap repository of appointments. Fixed 64-byte records in one direct buffer, plus two
@@ -28,18 +33,34 @@ public final class AgendamentoTable {
     public static final byte CANCELADO = 2;
 
     public static final int MAX_NOME = 40;
-    private static final int RECORD = 64;
-    private static final int O_STATUS = 4;
-    private static final int O_NOME_LEN = 5;
-    private static final int O_SERVICO = 8;
-    private static final int O_NEXT = 12;
-    private static final int O_DATA_HORA = 16;
-    private static final int O_NOME = 24;
+
+    // The record layout is declared once as an FFM StructLayout; only its byte offsets are used (as static final ints,
+    // so the JIT folds them), which makes the same layout work for the direct and the ffm Region backends.
+    private static final StructLayout RECORD_LAYOUT = MemoryLayout.structLayout(
+            ValueLayout.JAVA_INT.withName("id"),
+            ValueLayout.JAVA_BYTE.withName("status"),
+            ValueLayout.JAVA_BYTE.withName("nomeLen"),
+            MemoryLayout.paddingLayout(2),
+            ValueLayout.JAVA_INT.withName("servico"),
+            ValueLayout.JAVA_INT.withName("nextInDay"),
+            ValueLayout.JAVA_LONG.withName("dataHora"),
+            MemoryLayout.sequenceLayout(MAX_NOME, ValueLayout.JAVA_BYTE).withName("nome"));
+    private static final int RECORD = (int) RECORD_LAYOUT.byteSize();
+    private static final int O_STATUS = offset("status");
+    private static final int O_NOME_LEN = offset("nomeLen");
+    private static final int O_SERVICO = offset("servico");
+    private static final int O_NEXT = offset("nextInDay");
+    private static final int O_DATA_HORA = offset("dataHora");
+    private static final int O_NOME = offset("nome");
     private static final long SECONDS_PER_DAY = 86_400L;
 
-    private final ByteBuffer records;
-    private final ByteBuffer hash;
-    private final ByteBuffer days;
+    private static int offset(String field) {
+        return (int) RECORD_LAYOUT.byteOffset(PathElement.groupElement(field));
+    }
+
+    private final Region records;
+    private final Region hash;
+    private final Region days;
     private final int capacity;
     private final int hashMask;
     private final int dayMask;
@@ -53,9 +74,9 @@ public final class AgendamentoTable {
         final int daySize = Integer.highestOneBit(Math.max(2, daySlots - 1)) << 1;
         hashMask = hashSlots - 1;
         dayMask = daySize - 1;
-        records = ByteBuffer.allocateDirect(capacity * RECORD).order(ByteOrder.nativeOrder());
-        hash = ByteBuffer.allocateDirect(hashSlots * 4).order(ByteOrder.nativeOrder());
-        days = ByteBuffer.allocateDirect(daySize * 8).order(ByteOrder.nativeOrder());
+        records = Regions.allocate((long) capacity * RECORD);
+        hash = Regions.allocate((long) hashSlots * 4);
+        days = Regions.allocate((long) daySize * 8);
     }
 
     /**
