@@ -18,13 +18,5 @@
       "allDeclaredMethods": true,
       "allDeclaredFields": true
     }
-  ],
-  "foreign": {
-    "downcalls": [
-      {
-        "returnType": "jint",
-        "parameterTypes": ["jint", "jlong", "void*"]
-      }
-    ]
-  }
+  ]
 }

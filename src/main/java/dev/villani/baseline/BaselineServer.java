@@ -2,7 +2,7 @@ package dev.villani.baseline;
 
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
-import dev.villani.application.agendamento.AgendamentoServer;
+import dev.villani.application.agendamento.AgendamentoLimits;
 import dev.villani.application.agendamento.AgendamentoWarmUp;
 import dev.villani.baseline.heap.HeapController;
 import dev.villani.baseline.heap.HeapStore;
@@ -28,9 +28,9 @@ public final class BaselineServer implements AutoCloseable {
     public BaselineServer(String host, int port, ConcurrencyModel model, Memory memory, int pool,
                           DelayPolicy delay) throws IOException {
         final HttpHandler handler = memory == Memory.OFFHEAP
-                ? new OffHeapController(new AgendamentoTable(AgendamentoServer.RECORDS, AgendamentoServer.DAYS),
-                        AgendamentoServer.DEFAULT_CONNECTIONS, delay)
-                : new HeapController(new HeapStore(AgendamentoServer.RECORDS, AgendamentoServer.DAYS), delay);
+                ? new OffHeapController(new AgendamentoTable(AgendamentoLimits.RECORDS, AgendamentoLimits.DAYS),
+                        AgendamentoLimits.DEFAULT_CONNECTIONS, delay)
+                : new HeapController(new HeapStore(AgendamentoLimits.RECORDS, AgendamentoLimits.DAYS), delay);
         this.executor = model.newExecutor(pool);
         this.http = HttpServer.create(new InetSocketAddress(host, port), 1024);
         http.createContext("/", handler);
@@ -76,6 +76,7 @@ public final class BaselineServer implements AutoCloseable {
             app.start();
             System.out.println("agendamento listening on :" + app.port() + " (" + model + "-" + memory
                     + ", create delay " + delayMs + " ms, pool " + pool + ")");
+            Thread.currentThread().join();
         }
     }
 }

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Step 12b: repeats loop-off and vt-off, direct vs ffm, R times each (interleaved so drift hits every cell equally),
+# Step 12b: repeats vt-off and vt-heap (and off-heap direct vs ffm), R times each (interleaved so drift hits every cell equally),
 # then aggregates median/min/max of the k6 p99 and the RSS. Raw outputs: results/repeat/raw (ignored by git).
 # Usage: bench/repeat.sh [N=40000] [reps=5]     (also: ./run.sh repeat [N] [reps])
-# Env: CELLS ("loop-off:direct loop-off:ffm vt-off:direct vt-off:ffm"; "impl:mem:native" runs the static native image) SUMMARY (output file) RATE (2000) DELAY_MS (20) WARM (10000) LOAD_CPU (1-3) VUS (50)
+# Env: CELLS ("vt-off:direct vt-off:ffm vt-heap:direct"; "impl:mem:native" runs the static native image) SUMMARY (output file) RATE (2000) DELAY_MS (20) WARM (10000) LOAD_CPU (1-3) VUS (50)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 N=${1:-40000}; REPS=${2:-5}
-CELLS=${CELLS:-"loop-off:direct loop-off:ffm vt-off:direct vt-off:ffm"}
+CELLS=${CELLS:-"vt-off:direct vt-off:ffm vt-heap:direct"}
 export RATE=${RATE:-2000} DELAY_MS=${DELAY_MS:-20} WARM=${WARM:-10000} LOAD_CPU=${LOAD_CPU:-1-3} VUS=${VUS:-50}
 mvn -q compile
 mvn -q dependency:build-classpath -Dmdep.outputFile=target/classpath.txt >/dev/null

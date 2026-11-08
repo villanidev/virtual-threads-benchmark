@@ -1,6 +1,6 @@
 package dev.villani.baseline.offheap;
 
-import dev.villani.application.agendamento.AgendamentoServer;
+import dev.villani.application.agendamento.AgendamentoLimits;
 import dev.villani.application.agendamento.AgendamentoTable;
 import dev.villani.server.json.JsonBinder;
 import dev.villani.server.json.JsonRecord;
@@ -18,8 +18,8 @@ import java.util.concurrent.ArrayBlockingQueue;
  */
 final class RequestContext {
 
-    static final int IN_BYTES = AgendamentoServer.READ_BYTES;
-    static final int OUT_BYTES = AgendamentoServer.RESPONSE_BODY_BYTES;
+    static final int IN_BYTES = AgendamentoLimits.READ_BYTES;
+    static final int OUT_BYTES = AgendamentoLimits.RESPONSE_BODY_BYTES;
 
     final byte[] inArray = new byte[IN_BYTES + 1];
     final ByteBuffer inStaging = ByteBuffer.wrap(inArray);

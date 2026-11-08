@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 RAW = "results/compare/raw"
-ORDER = ["loop-off", "vt-heap", "vt-off", "fixed-heap", "fixed-off", "cached-heap", "cached-off"]
+ORDER = ["vt-heap", "vt-off", "fixed-heap", "fixed-off", "cached-heap", "cached-off"]
 
 
 def jfr_events(path, event):

@@ -6,7 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import dev.villani.application.agendamento.AgendamentoRules;
-import dev.villani.application.agendamento.AgendamentoServer;
+import dev.villani.application.agendamento.AgendamentoLimits;
 import dev.villani.server.http.DelayPolicy;
 
 import java.io.ByteArrayOutputStream;
@@ -118,11 +118,11 @@ public final class HeapController implements HttpHandler {
             return;
         }
         // same truncation rule as the flat server: stop when the next item might not fit the body budget
-        final ByteArrayOutputStream out = new ByteArrayOutputStream(AgendamentoServer.RESPONSE_BODY_BYTES);
+        final ByteArrayOutputStream out = new ByteArrayOutputStream(AgendamentoLimits.RESPONSE_BODY_BYTES);
         out.write('[');
         boolean first = true;
         for (HeapStore.Agendamento a : store.ofDay(day)) {
-            if (AgendamentoServer.RESPONSE_BODY_BYTES - out.size() < MAX_ITEM_BYTES) {
+            if (AgendamentoLimits.RESPONSE_BODY_BYTES - out.size() < MAX_ITEM_BYTES) {
                 break;
             }
             if (!first) {

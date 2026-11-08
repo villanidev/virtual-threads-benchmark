@@ -3,11 +3,11 @@
 # Usage: bench/compare.sh <N=requests per phase> [vus=50]    (also: ./run.sh compare <N> [vus])
 # Env: IMPLS (space list, default: all) POOLS (pool sizes for fixed-*, default "200 16") RATE (2000; 0 = closed model)
 #      DELAY_MS (20) WARM (10000) LOAD_CPU (1-3) TAG ; anything else is forwarded to bench/server.sh.
-# Output: results/compare/raw/* (ignored by git) and results/compare/summary.md (versioned).
+# Output: results/compare/raw/* (ignored by git) and results/compare/summary.md (not versioned).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 N=${1:-60000}; VUS=${2:-${VUS:-50}}
-IMPLS=${IMPLS:-"loop-off vt-heap vt-off fixed-heap fixed-off cached-heap cached-off"}
+IMPLS=${IMPLS:-"vt-heap vt-off fixed-heap fixed-off cached-heap cached-off"}
 POOLS=${POOLS:-"200 16"}
 export RATE=${RATE:-2000} DELAY_MS=${DELAY_MS:-20} WARM=${WARM:-10000} LOAD_CPU=${LOAD_CPU:-1-3}
 mvn -q compile

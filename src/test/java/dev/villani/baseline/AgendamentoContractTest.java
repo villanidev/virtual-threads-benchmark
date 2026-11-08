@@ -1,6 +1,5 @@
 package dev.villani.baseline;
 
-import dev.villani.application.agendamento.AgendamentoServer;
 import dev.villani.server.http.DelayPolicy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -26,7 +25,6 @@ class AgendamentoContractTest {
     private static final long JAN_2 = LocalDate.of(2026, 1, 2).atStartOfDay(ZoneOffset.UTC).toEpochSecond();
 
     enum Impl {
-        LOOP_OFF,
         VIRTUAL_HEAP,
         FIXED_HEAP,
         CACHED_HEAP,
@@ -43,29 +41,6 @@ class AgendamentoContractTest {
     }
 
     private static Running start(Impl impl) throws IOException {
-        if (impl == Impl.LOOP_OFF) {
-            final AgendamentoServer app = new AgendamentoServer("127.0.0.1", 0, 64, DelayPolicy.fixed(1),
-                    () -> System.nanoTime() / 1_000_000);
-            final Thread loop = new Thread(() -> {
-                try {
-                    app.run();
-                } catch (IOException ignored) {
-                    // closed by the test
-                }
-            });
-            loop.start();
-            return new Running() {
-                public int port() throws IOException {
-                    return app.port();
-                }
-
-                public void close() throws Exception {
-                    app.stop();
-                    loop.join(2_000);
-                    app.close();
-                }
-            };
-        }
         final ConcurrencyModel model = ConcurrencyModel.valueOf(impl.name().substring(0, impl.name().indexOf('_')));
         final BaselineServer app = new BaselineServer("127.0.0.1", 0, model, impl.name().endsWith("_OFF") ? BaselineServer.Memory.OFFHEAP : BaselineServer.Memory.HEAP, 16,
                 DelayPolicy.fixed(1));

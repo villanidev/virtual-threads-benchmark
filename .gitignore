@@ -45,6 +45,5 @@ bench/results/server-*.txt
 # JFR recordings, GC and server logs
 jfr/
 
-# comparison raw outputs (summary.md is versioned)
-results/compare/raw/
-results/repeat/raw/
+# generated benchmark outputs
+results/

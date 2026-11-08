@@ -1,7 +1,5 @@
 package dev.villani.application.agendamento;
 
-import dev.villani.server.http.DelayPolicy;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -10,39 +8,18 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * End-to-end boot warm-up: starts a throwaway {@link AgendamentoServer} on a loopback ephemeral port (own
- * table, pool and timer wheel, so no fake data reaches the real instance), drives it with synthetic socket
- * clients through the full path (accept, parse, route, JSON, deferred create via the timer wheel, list, cancel,
- * pipelining, connection churn), then closes it. The JIT compiles per method, so the real instance
+ * End-to-end boot warm-up client: drives a server speaking the Agendamento API through the full path (parse, route,
+ * JSON, deferred create, list, cancel, connection churn). The JIT compiles per method, so the real instance
  * starts with the hot classes already compiled. It allocates freely: it is boot-time work only.
  */
 public final class AgendamentoWarmUp {
 
     private static final int CLIENTS = 16;
-    private static final int WARM_DELAY_MS = 1;
     private static final long BASE = 1_767_225_600L; // 2026-01-01T00:00:00Z
     private static final int RECONNECT_EVERY = 256;
     private static final int PIPELINE_EVERY = 16;
 
     private AgendamentoWarmUp() {
-    }
-
-    /** One cycle = create + list + cancel (plus occasional pipelining and reconnects). */
-    static void run(int cycles) throws IOException, InterruptedException {
-        try (AgendamentoServer warm = new AgendamentoServer("127.0.0.1", 0, CLIENTS * 2,
-                DelayPolicy.fixed(WARM_DELAY_MS), () -> System.nanoTime() / 1_000_000)) {
-            final Thread loop = new Thread(() -> {
-                try {
-                    warm.run();
-                } catch (IOException ignored) {
-                    // closed below
-                }
-            }, "warm-up-loop");
-            loop.start();
-            drive(warm.port(), cycles, true);
-            warm.stop();
-            loop.join(2_000);
-        }
     }
 
     /**

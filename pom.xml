@@ -17,7 +17,7 @@
   </properties>
 
   <dependencies>
-      <!-- only used by dev.villani.baseline (idiomatic heap variant of the comparison) -->
+      <!-- idiomatic heap variant (HeapController) -->
       <dependency>
           <groupId>com.fasterxml.jackson.core</groupId>
           <artifactId>jackson-databind</artifactId>
@@ -27,13 +27,6 @@
           <groupId>org.junit.jupiter</groupId>
           <artifactId>junit-jupiter</artifactId>
           <version>5.11.0</version>
-          <scope>test</scope>
-      </dependency>
-      <!-- microbenchmarks only (src/test/java/dev/villani/jmh); not part of the server runtime -->
-      <dependency>
-          <groupId>org.openjdk.jmh</groupId>
-          <artifactId>jmh-core</artifactId>
-          <version>1.37</version>
           <scope>test</scope>
       </dependency>
       <dependency>
@@ -54,20 +47,6 @@
       <plugin>
         <artifactId>maven-compiler-plugin</artifactId>
         <version>3.13.0</version>
-        <executions>
-          <execution>
-            <id>default-testCompile</id>
-            <configuration>
-              <annotationProcessorPaths>
-                <path>
-                  <groupId>org.openjdk.jmh</groupId>
-                  <artifactId>jmh-generator-annprocess</artifactId>
-                  <version>1.37</version>
-                </path>
-              </annotationProcessorPaths>
-            </configuration>
-          </execution>
-        </executions>
       </plugin>
       <plugin>
         <artifactId>maven-surefire-plugin</artifactId>
