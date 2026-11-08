@@ -72,9 +72,10 @@ public final class BaselineServer implements AutoCloseable {
             warmUp(model, memory, pool, warm);
             System.out.println("warm-up: " + warm + " cycles in " + (System.nanoTime() - t0) / 1_000_000 + " ms");
         }
-        final BaselineServer app = new BaselineServer("0.0.0.0", port, model, memory, pool, DelayPolicy.fixed(delayMs));
-        app.start();
-        System.out.println("agendamento listening on :" + app.port() + " (" + model + "-" + memory
-                + ", create delay " + delayMs + " ms, pool " + pool + ")");
+        try (BaselineServer app = new BaselineServer("0.0.0.0", port, model, memory, pool, DelayPolicy.fixed(delayMs))) {
+            app.start();
+            System.out.println("agendamento listening on :" + app.port() + " (" + model + "-" + memory
+                    + ", create delay " + delayMs + " ms, pool " + pool + ")");
+        }
     }
 }

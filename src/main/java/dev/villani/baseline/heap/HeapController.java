@@ -38,6 +38,7 @@ public final class HeapController implements HttpHandler {
             .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
             .disable(DeserializationFeature.ACCEPT_FLOAT_AS_INT)
             .disable(MapperFeature.ALLOW_COERCION_OF_SCALARS);
+
     private final HeapStore store;
     private final DelayPolicy delay;
 
