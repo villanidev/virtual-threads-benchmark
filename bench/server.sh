@@ -5,13 +5,12 @@
 # Pinning: this CPU has SMT (cpu0 and cpu1 share a physical core), so the server uses CPU 0, CPU 1 stays idle
 # and k6 runs on CPUs 2-3 (the other physical core).
 # Env: RATE (0 = closed model; >0 = k6 constant-arrival-rate req/s) VUS (50) DELAY_MS (20) WARM (0 = no boot warm-up) PHASES (write,read,mixed) PORT (8080)
-#      IMPL (unset = legacy flat run; loop-off|vt-heap|vt-off|fixed-heap|fixed-off|cached-heap|cached-off:
-#      comparison mode, outputs go to results/compare/raw, NMT on) POOL (200, fixed models)
+#      IMPL (unset = plain run, outputs in bench/results; loop-off: comparison mode, outputs go to results/compare/raw, NMT on)
 #      MEM_API (direct|ffm: off-heap backend, -Dflat.memory) PIN (cpu number: pins the loop thread via FFM sched_setaffinity, -Dflat.pin;
 #      must be inside SERVER_CPU; loop-off only)
 #      HEAP (128, MB) GC (unset = JVM default, serial on 1 vCPU; serial|zgc|g1|parallel: adds -XX:+Use<GC>GC and a name suffix)
 #      SERVER_CPU (0) LOAD_CPU (2-3) TAG JAVA_EXTRA
-#      NATIVE (1 = run target/native/{agendamento|baseline} instead of the JVM; needs IMPL; no JFR/NMT)
+#      NATIVE (1 = run target/native/agendamento instead of the JVM; needs IMPL; no JFR/NMT)
 # Server: 1 vCPU, -Xmx<HEAP>m -Xms<HEAP>m, JFR profile + GC log. Load generator: k6 pinned via LOAD_CPU.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -19,7 +18,7 @@ N=${1:-1000}; VUS=${2:-${VUS:-50}}
 PRETOUCH=${PRETOUCH-1}; MEM_API=${MEM_API:-direct}; PIN=${PIN:-}; HEAP=${HEAP:-128}; GC=${GC:-}; PORT=${PORT:-8080}; TAG=${TAG:-}; IMPL=${IMPL:-}; POOL=${POOL:-200}
 if [ -n "$IMPL" ]; then
   OUT_DIR=${OUT_DIR_OVERRIDE:-results/compare/raw}; JFR_DIR=$OUT_DIR
-  SUF=""; case $IMPL in fixed-*) SUF="-p$POOL";; esac
+  SUF=""
   [ "$HEAP" != 128 ] && SUF="$SUF-h$HEAP"
   [ -n "$GC" ] && SUF="$SUF-$GC"
   [ "$MEM_API" != direct ] && SUF="$SUF-$MEM_API"
@@ -38,19 +37,7 @@ case "$GC" in "") ;; serial) JVM_FLAGS="-XX:+UseSerialGC";; zgc) JVM_FLAGS="-XX:
 JVM_FLAGS="$JVM_FLAGS -Dflat.memory=$MEM_API${PIN:+ -Dflat.pin=$PIN}"
 MAIN=(dev.villani.application.agendamento.AgendamentoServer "$PORT" "${DELAY_MS:-20}" "${WARM:-0}")
 CP=target/classes
-if [ -n "$IMPL" ]; then
-  JVM_FLAGS="$JVM_FLAGS -XX:NativeMemoryTracking=summary"
-  if [ "$IMPL" != loop-off ]; then
-    [ -f target/classpath.txt ] || mvn -q dependency:build-classpath -Dmdep.outputFile=target/classpath.txt >/dev/null
-    CP="target/classes:$(cat target/classpath.txt)"
-    # the JDK HttpServer leaves Nagle on by default: headers+body in two segments hit the 40 ms delayed ACK
-    JVM_FLAGS="$JVM_FLAGS -Dsun.net.httpserver.nodelay=true"
-    CONC=${IMPL%%-*}; MEM=${IMPL#*-}
-    case $CONC in vt) CONC=VIRTUAL;; fixed) CONC=FIXED;; cached) CONC=CACHED;; *) echo "bad IMPL $IMPL"; exit 2;; esac
-    case $MEM in heap) MEM=HEAP;; off) MEM=OFFHEAP;; *) echo "bad IMPL $IMPL"; exit 2;; esac
-    MAIN=(dev.villani.baseline.BaselineServer "$PORT" "${DELAY_MS:-20}" "$CONC" "$MEM" "$POOL" "${WARM:-0}")
-  fi
-fi
+[ -n "$IMPL" ] && JVM_FLAGS="$JVM_FLAGS -XX:NativeMemoryTracking=summary"
 
 BOOT_T0=$(date +%s%N)
 if [ -n "${NATIVE:-}" ]; then
@@ -58,7 +45,7 @@ if [ -n "${NATIVE:-}" ]; then
   # NATIVE_JFR=1: image built with NI_EXTRA=--enable-monitoring=jfr BIN_SUFFIX=-jfr; adds JFR and GC logging
   NI_FLAGS=""; JSUF=""
   [ -n "${NATIVE_JFR:-}" ] && { JSUF=-jfr; NI_FLAGS="-XX:+PrintGC -XX:+VerboseGC -XX:+FlightRecorder -XX:StartFlightRecording=filename=${JFR_DIR}/${NAME}.jfr,settings=profile,dumponexit=true"; }
-  BIN=target/native/agendamento${BIN_SUFFIX:-}$JSUF; [ "$IMPL" = loop-off ] || BIN=target/native/baseline${BIN_SUFFIX:-}$JSUF
+  BIN=target/native/agendamento${BIN_SUFFIX:-}$JSUF
   [ -x "$BIN" ] || { echo "$BIN missing: run bench/native-build.sh"; exit 2; }
   # shellcheck disable=SC2086
   taskset -c "${SERVER_CPU:-0}" "$BIN" $NI_FLAGS -Xmx${HEAP}m -Xms${HEAP}m -Dflat.memory=$MEM_API ${PIN:+-Dflat.pin=$PIN} \

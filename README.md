@@ -1,73 +1,40 @@
-# virtual-threads-benchmark
+# virtual-threads-benchmark (branch `custom-nio-http-feature`)
 
-Estudo de modelos de concorrência e alocação de memória em hardware escasso: **1 vCPU** (`taskset -c 0`) e **heap de 128m** (`-Xmx128m -Xms128m`), JDK 25 (Temurin). Cada task simula uma chamada bloqueante (`sleep`).
+Servidor HTTP próprio de agendamento, **single-thread, NIO, memória plana e zero alocação**, em **1 vCPU** (`taskset -c 0`) e **heap de 128m** (`-Xmx128m -Xms128m`), JDK 25 (Temurin). Backends off-heap: `DirectByteBuffer`, FFM (`MemorySegment`) e, em imagem nativa, `NativeRegion` (Native Image SDK). Cobre os ciclos 2 (servidor flat) e 3 (GraalVM native-image).
 
-> Todos os números abaixo vêm de **uma única execução** por ponto. Servem para ordem de grandeza, não para comparar diferenças pequenas.
+> Esta é uma de três branches: `main` (benchmark de concorrência, ciclo 1), `custom-nio-http-feature` (esta) e `custom-http-feature` (baseline com o `HttpServer` do JDK, virtual threads e pools, usado como ponto de comparação). Os números de comparação com o baseline estão na README daquela branch. A tag `ciclo-1-3-completo` guarda o repositório inteiro antes da separação. Resultados (`results/`, `jfr/`) não são versionados: são gerados pelos scripts.
+
+> Os números abaixo vêm de **uma única execução** por ponto, salvo onde há repetições. Servem para ordem de grandeza.
 
 ## Como rodar
 
 ```bash
-mvn -q compile
-./run.sh <modelo> <N> [cpu=0]          # JFR em jfr/<modelo>-<N>.jfr
-POOL=20 SLEEP_MS=50 ./run.sh vfixed 20000
-JAVA_EXTRA=-XX:+UseCompactObjectHeaders TAG=coh ./run.sh virtual 50000
-./run.sh server 100000 [vus=50]        # teste de carga real do servidor de agendamento (ciclo 2)
+./run.sh server 100000 [vus=50]        # teste de carga real do servidor de agendamento (k6)
 VUS=200 DELAY_MS=50 WARM=20000 PHASES=write,read ./run.sh server 10000
-LOAD_CPU=1-3 DELAY_MS=1 ./run.sh server 100000 200   # k6 em 3 CPUs, delay 1 ms, 200 VUs
+LOAD_CPU=1-3 DELAY_MS=1 ./run.sh server 100000 200
+./run.sh repeat 40000 5                # loop-off direct/ffm repetido (CELLS, SUMMARY), mediana [min..max]
+./run.sh jmh                           # AccessBench: custo de acesso (Region direct/ffm, StructLayout)
+./run.sh native-build                  # target/native/agendamento (musl estático; LINK=mostly, OPT=3)
 ```
 
-Modelos do [Bench.java](src/main/java/dev/villani/benchmark/Bench.java): `cached`, `fixed` (pool=`POOL`, padrão 500), `vfixed` (pool fixo de virtual threads), `virtual`, `flat`, `flat-dbb`, `flat-nio`, `vsem-heap`, `vsem-slab`. Saída: tempo, bytes alocados pela thread main, GC e pico de heap usada. As classes `CachedThreadPool`, `FixedThreadPool`, `VirtualThreadPool` e `VirtualThreadPoolWithSemaphore` (em `benchmark/executors`) são os experimentos originais, só movidas de pacote.
+Requer k6 no PATH. Testes: `mvn test` e `mvn test -DargLine="-Dflat.memory=ffm --enable-native-access=ALL-UNNAMED"`.
 
 ## Estrutura de pacotes
 
 ```
 dev.villani
-├── benchmark              Bench (ponto de entrada dos experimentos)
-│   ├── executors          pools de threads e variantes com semáforo
-│   └── eventloop          loops flat (FFM, DirectByteBuffer, NIO Selector)
-├── server                 infraestrutura HTTP flat, reutilizável e sem conhecer o domínio (ciclo 2)
-│   ├── memory             IntRing, ByteRing, ReadyQueue, ConnectionPool (memória plana)
+├── server                 infraestrutura HTTP flat, reutilizável e sem conhecer o domínio
+│   ├── memory             Region (direct|ffm|native), IntRing, ByteRing, ReadyQueue, ConnectionPool
 │   ├── net                NioServer (Selector, backpressure, ganchos de tick/close)
 │   ├── http               parser, Router, Dispatcher, ResponseWriter, AsyncHandler, HttpConnectionHandler
 │   ├── json               tokenizador, binder para registro pooled, JsonWriter
+│   ├── os                 CpuAffinity (FFM) e NativeAffinity (@CFunction em imagem nativa)
 │   └── time               TimerWheel plana
 └── application
-    └── agendamento        tabela off-heap, regras, handlers, AgendamentoServer (API de agendamento)
+    └── agendamento        tabela off-heap, regras, handlers, AgendamentoServer (exemplo de uso do servidor)
 ```
 
-Regra: `server` é a base reutilizável e nunca importa `application` nem `benchmark` (verificado por `PackageDependencyTest`); `application` depende de `server`. Dentro do `server`, camadas técnicas (`memory`, `net`, `http`, `json`, `routing`); dentro do `application`, um pacote por feature. Testes seguem o mesmo layout, em estilo BDD (given/when/then), com utilitários em `dev.villani.testsupport` (`AllocationProbe`).
-
-## Resultados
-
-Sleep de 1s (N de 1k a 100k), salvo indicação.
-
-| Modelo | Resultado |
-|---|---|
-| `newFixedThreadPool(500)` | Tempo = ⌈N/500⌉ s: 2s, 20s, 200s (1k, 10k, 100k). As threads bloqueadas ocupam a vaga sem usar CPU. |
-| `newCachedThreadPool` | 1,2s (1k), 2,9s (10k), ~11s (100k, medição anterior). Uma thread de plataforma por task. |
-| `newVirtualThreadPerTaskExecutor` | ~1,05s (1k), ~1,2–1,7s (10k), 1,6–3,4s (50k). **Em 128m não termina com 80k–100k**: Full GC contínuo. |
-| Virtual + Compact Object Headers | ~11–12% menos alocação (4,2→3,7 MB a 10k; 20,2→17,8 MB a 50k). Não evita o colapso. |
-| `vfixed` pool 10/20/50 (20k tasks, 50 ms) | 101s / 50s / 20s, pico de heap 24–25 MB, 0 GCs. Memória plana, mas tempo = N/pool. |
-| Virtual + semáforo (50), buffer de 10 KB na heap | 5k: pico de 71 MB; 20k: colapsa. O buffer era alocado antes do `acquire()`. |
-| Virtual + semáforo (50), slab off-heap | 5k: 30 MB; 20k: 20,5s, pico de 84 MB. Dados planos; sobra o custo linear das threads estacionadas. |
-| Flat (1 thread, estado off-heap) | ~1,02–1,14s para 1k–100k, 0 GCs, alocação constante (~540 KB com FFM, 8–20 KB com buffers NIO). |
-
-Alocação por task nas variantes flat é zero. A diferença de ~540 KB contra ~8 KB entre FFM e `DirectByteBuffer` é provavelmente inicialização (hipótese não confirmada); o JFR (`ThreadAllocationStatistics`: ~15,5 MB nas três) não distingue as variantes.
-
-## Interpretação (mechanical sympathy)
-
-- **Sleep não consome CPU.** O tempo dos pools de plataforma é Lei de Little: concorrência × latência. Com tasks bloqueantes, o gargalo é o número de vagas, não a CPU.
-- **Virtual threads trocam memória por simplicidade.** Cada task viva custa objetos na heap (`VirtualThread`, `StackChunk`, timer do sleep, rastreamento do executor). O custo é linear em N e vem do runtime do JDK; object pool e flyweight não o alcançam.
-- **Limitar a concorrência não ajuda.** Com pool ou semáforo a memória fica plana, mas o tempo vira N/limite, e o semáforo ainda mantém todas as threads estacionadas (e as filas na heap).
-- **Single thread + memória off-heap é o que dá memória plana neste tamanho de heap.** A task vira um índice; os prazos ficam em um `MemorySegment` (FFM) ou `DirectByteBuffer`; uma thread espera até o próximo prazo (`parkNanos` ou `Selector.select`).
-
-### Variantes flat
-
-- [FlatEventLoop](src/main/java/dev/villani/benchmark/eventloop/FlatEventLoop.java): FFM (`Arena` + `MemorySegment`), liberação determinística.
-- [DirectBufferEventLoop](src/main/java/dev/villani/benchmark/eventloop/DirectBufferEventLoop.java): `ByteBuffer.allocateDirect`; limitado por `-XX:MaxDirectMemorySize`, liberação via `Cleaner`.
-- [NioEventLoop](src/main/java/dev/villani/benchmark/eventloop/NioEventLoop.java): espera em `Selector.select(timeoutMs)` (granularidade de 1 ms), o mesmo ponto de bloqueio usado para I/O em servidores NIO.
-
-Como o atraso é constante, uma fila FIFO de prazos substitui a timer wheel.
+Regra: `server` nunca importa `application` (verificado por `PackageDependencyTest`). Testes seguem o mesmo layout, em estilo BDD (given/when/then), com `AllocationProbe` em `dev.villani.testsupport`.
 
 ## Servidor flat sob carga real (ciclo 2)
 
@@ -147,54 +114,26 @@ Com 4k req/s a mediana de leitura é 0,3 ms; o p99 de dezenas de ms vem de pausa
 
 Compact Object Headers (JDK 25, `JAVA_EXTRA=-XX:+UseCompactObjectHeaders TAG=coh`), RATE=4000: RSS 218,3 MB (base) vs 221,0 MB (COH); mesma vazão e latência dentro do ruído. **Sem queda de memória**: o heap de 128 MB é pré-tocado (`AlwaysPreTouch`) e os dados vivem off-heap, então não há objetos em volume para o cabeçalho menor economizar; o COH só ajuda aplicações com muitos objetos pequenos na heap.
 
-## Passo 11: concorrência x layout de memória (mesma API, mesmo k6)
-
-`./run.sh compare 60000 50` roda 9 execuções (`loop-off`, `vt|fixed|cached` x `heap|off`, `fixed` com pool 200 e 16): 1 vCPU, `-Xmx128m -Xms128m`, JFR, aquecimento de 10k ciclos, k6 em taxa constante (`RATE=2000`, delay 20 ms, 50 VUs). Pastas: `results/compare/raw/` (ignorada) e [results/compare/summary.md](results/compare/summary.md) (tabelas completas, geradas por `bench/summarize.py`). `IMPL=<modelo>-<memória> ./run.sh server N` roda uma célula só.
-
-- **loop-off**: o servidor flat (event loop NIO + off-heap). **\*-heap**: `HttpServer` do JDK + Jackson + records + `ConcurrentHashMap`. **\*-off**: o mesmo `HttpServer`, mas JSON flat, tabelas off-heap com `StampedLock` e pool limitado de contextos de requisição (sem `ThreadLocal`). O teste de contrato (`AgendamentoContractTest`) garante respostas idênticas nas 7 variantes.
-
-| impl | GCs na carga | pausa total | alloc KB/req (JFR, estimativa) | RSS MB | threads | CPU JVM |
-|---|---|---|---|---|---|---|
-| loop-off | 0 | 0 ms | ~0 | 233 | 16 | 3,1% |
-| vt-off | 69 | 47 ms | 13,6 | 258 | 21 | 7,6% |
-| fixed-off (200) | 71 | 94 ms | 12,3 | 280 | 218 | 9,6% |
-| cached-off | 66 | 65 ms | 12,5 | 273 | 68 | 8,7% |
-| vt-heap | 418 | 496 ms | 82,7 | 236 | 21 | 9,0% |
-| fixed-heap (200) | 367 | 553 ms | 62,3 | 265 | 218 | 12,6% |
-| cached-heap | 321 | 458 ms | 62,4 | 246 | 71 | 10,0% |
-| fixed-off (16) | 51 | 48 ms | 12,4 | 265 | 34 | 6,1% |
-| fixed-heap (16) | 178 | 224 ms | 43,5 | 236 | 34 | 6,9% |
-
-Leitura:
-- **Latência não discrimina a 2k req/s**: write p50 ~20,5 ms (o delay) e read p50 0,24–0,43 ms em todos. O p99 de leitura vai de 0,95 ms (loop-off) a 4,3 ms (fixed-heap 200).
-- **Exceção: `fixed` com pool 16** limita o write a pool/delay = 16/20 ms = ~800 req/s (p50 254 ms, 36k iterações perdidas). É o efeito do ciclo 1: pool pequeno com tarefa bloqueante. (Nesses casos a fase `read` lista dias que não chegaram a ser escritos, então ela fica mais leve que o normal.)
-- **Alocação**: heap ~62–83 KB/req e centenas de GCs; off-heap com threads cai para ~12–14 KB/req (5–6x menos) e dezenas de GCs; o que sobra é o **piso do `HttpServer` do JDK** (exchange, headers, streams), que o layout de memória não elimina. Só o servidor flat chega a ~0 e a 0 GCs na carga.
-- **Off-heap é uma técnica ortogonal à concorrência** e vale com modelos tradicionais, mas sozinha não zera a alocação enquanto o transporte for o do JDK; e o custo aparece em RSS (+20–45 MB de contextos e tabelas off-heap contra o heap fixo de 128 MB).
-- **RSS**: o loop-off é o menor da classe off-heap (233 MB); os `*-off` com threads ficam em 258–280 MB. O heap pré-tocado (128 MB) é comum a todos.
-- **Achado de configuração**: o `HttpServer` do JDK vem sem `TCP_NODELAY`; headers e body saem em segmentos separados e o delayed-ACK adiciona ~40 ms às respostas com corpo. O `server.sh` usa `-Dsun.net.httpserver.nodelay=true` nas variantes do JDK (sem isso o p50 de leitura era 42 ms).
-- Cuidados: uma execução por célula, laptop com SMT, k6 em CPUs 1-3 (irmã SMT do servidor); a estimativa de alocação do JFR é estatística e `jdk.CPULoad` é relativo ao que a JVM enxerga.
-
 ### Heap menor e ZGC (N=20.000, 1 vCPU, RATE 2000, uma execução por célula)
 
-Parâmetros do `server.sh`/`compare.sh`: `HEAP` (MB, padrão 128) e `GC` (`serial|zgc|g1|parallel`; sem ele a JVM escolhe, Serial em 1 vCPU). Os nomes dos arquivos ganham `-h<HEAP>` e `-<GC>`. O `summarize.py` conta GCs pelo JFR, porque o `-Xlog:gc` do ZGC não imprime "Pause". Use um N diferente do `summary.md` versionado para não misturar execuções.
+Parâmetros do `server.sh`: `HEAP` (MB, padrão 128) e `GC` (`serial|zgc|g1|parallel`; sem ele a JVM escolhe, Serial em 1 vCPU). Os nomes dos arquivos ganham `-h<HEAP>` e `-<GC>`.
 
-| impl | GCs (carga) | pausa ms | RSS MB | threads |
+| variante | GCs (carga) | pausa ms | RSS MB | threads |
 |---|---|---|---|---|
 | loop-off, serial, 64m | 5 | 3,5 | 170 | 16 |
 | loop-off, serial, 128m | 1 | 0,2 | 232 | 16 |
 | loop-off, ZGC, 128m | 0 | 0 | 241 | 24 |
-| vt-heap, serial, 128m | 138 | 150,8 | 232 | 21 |
-| vt-heap, ZGC, 128m | 94 | 2,6 | 258 | 30 |
 
 - O RSS cai quase 1:1 com o `-Xms` (pre-touch): 128m para 64m tira ~60 MB, sem mudar a latência do loop-off.
-- ZGC no loop-off não ajuda (não há o que coletar) e custa +10–20 MB de RSS e +8 threads. No vt-heap as pausas somem (2,6 ms), mas o trabalho de GC vira ciclos concorrentes na mesma CPU (94 ciclos, `alloc` maior), então a latência não melhora em 1 vCPU.
+- ZGC no loop-off não ajuda (não há o que coletar) e custa +10–20 MB de RSS e +8 threads.
 - `-XX:MaxDirectMemorySize` limita só `DirectByteBuffer`; o dimensionamento do container deve partir do RSS medido, não do valor do off-heap.
+
 
 ## Passo 12: backend FFM (`MemorySegment`) e thread affinity
 
 - **`server.memory.Region`**: interface mínima de memória off-heap (`get/put`, `getInt/putInt`, `getLong/putLong`, `asByteBuffer()`), com dois backends: `DirectRegion` (`ByteBuffer.allocateDirect`) e `FfmRegion` (`Arena.global().allocate` + `MemorySegment`). `Regions` escolhe por `-Dflat.memory=direct|ffm` (padrão `direct`). As estruturas de dados (`AgendamentoTable`, `IntRing`, `ReadyQueue`, flags do `ConnectionPool`) usam os acessores; os buffers de I/O (slab de conexões, corpo da resposta, rings por requisição) usam `Regions.allocateBuffer`, uma view `ByteBuffer` sobre a mesma memória, porque o NIO só aceita `ByteBuffer`.
 - **`server.os.CpuAffinity`**: `sched_setaffinity` via FFM (`Linker.nativeLinker()`, sem JNI nem biblioteca extra), para a thread que chama. `-Dflat.pin=<cpu>` faz o `AgendamentoServer` pinar a thread do loop no boot. Diferente do `taskset`, só a thread do loop fica presa; GC, JIT e JFR podem usar outras CPUs (só faz diferença com 2+ CPUs).
-- `server.sh`/`compare.sh`: `MEM_API=direct|ffm` e `PIN=<cpu>` (precisa estar dentro de `SERVER_CPU`); os nomes dos arquivos ganham `-ffm` e `-pin<cpu>`. Testes: `mvn test` e `mvn test -DargLine="-Dflat.memory=ffm --enable-native-access=ALL-UNNAMED"` (167 testes verdes nos dois).
+- `server.sh`: `MEM_API=direct|ffm` e `PIN=<cpu>` (precisa estar dentro de `SERVER_CPU`); os nomes dos arquivos ganham `-ffm` e `-pin<cpu>`. Testes: `mvn test` e `mvn test -DargLine="-Dflat.memory=ffm --enable-native-access=ALL-UNNAMED"` (152 testes verdes nos dois).
 
 Resultado (1 vCPU, 128m, RATE 2000, N=40000, uma execução por célula):
 
@@ -203,8 +142,6 @@ Resultado (1 vCPU, 128m, RATE 2000, N=40000, uma execução por célula):
 | loop-off direct | 21,9 | 0,74 | 0 | 34 | 236 |
 | loop-off ffm | 22,4 | 0,96 | 0 | 34 | 247 |
 | loop-off ffm + pin 0 | 22,6 | 0,93 | 1 | 34 | 249 |
-| vt-off direct | 23,3 | 1,18 | 48 | 34 | 254 |
-| vt-off ffm | 23,5 | 1,77 | 49 | 34 | 259 |
 
 - **Sem diferença de alocação nem de memória de dados**: o FFM não alocou mais no heap (0 GCs no loop-off) e os dados ocupam os mesmos 34 MB (NMT `Other`). O FFM **não** entra no `BufferPool direct` nem no `MaxDirectMemorySize`; só no NMT e no RSS.
 - **RSS +5–11 MB** com FFM (infraestrutura do linker e dos `MethodHandle`s). O p50 é igual; as diferenças de p99 estão no ruído de uma execução.
@@ -232,8 +169,6 @@ O custo é dominado por cache miss; as APIs empatam (ffm ≈ +0,25 ns quente, +1
 |---|---|---|---|---|
 | loop-off | direct | 22,55 | 1,11 | 234 |
 | loop-off | ffm | 22,67 | 0,96 | 242 |
-| vt-off | direct | 23,46 | 1,31 | 258 |
-| vt-off | ffm | 23,38 | 1,41 | 260 |
 
 Os intervalos de p99 se sobrepõem, então "ffm sempre pior" era ruído. O único custo consistente é **RSS +8 MB no loop-off** (infraestrutura FFM, causa não verificada).
 
@@ -251,22 +186,18 @@ Os intervalos de p99 se sobrepõem, então "ffm sempre pior" era ruído. O únic
 |---|---|---|---|---|---|
 | loop-off | direct | 1,40 | 7,4 [5,9..7,6] | 6,4 | 237 |
 | loop-off | ffm | 1,44 | 8,6 [8,3..10,0] | 9,7 | 246 |
-| vt-off | direct | 1,52 | 21,1 [14,2..24,0] | 18,8 | 261 |
-| vt-off | ffm | 1,55 | 15,3 [14,1..23,7] | 10,3 | 256 |
 
-- Sem o delay de 20 ms escondendo a espera, o modelo aparece: o loop-off tem p99 de 7–9 ms contra 15–21 ms do vt-off, e o vt-off varia muito mais (até 59 ms no mixed).
-- No loop-off o ffm ficou um pouco pior (p99 write +1,2 ms, read +3,3 ms), coerente com o custo de acesso do JMH e o +8 MB de RSS, mas são só 3 repetições. No vt-off a ordem se inverte dentro de faixas largas, então é ruído de agendamento.
-- Para confirmar o ffm pior no loop-off seriam necessárias mais repetições (~5) e uma taxa maior.
+- Sem o delay de 20 ms escondendo a espera, o loop-off tem p99 de 7–9 ms. O ffm ficou um pouco pior (p99 write +1,2 ms, read +3,3 ms), coerente com o custo de acesso do JMH e o +8 MB de RSS, mas são só 3 repetições.
+- Para confirmar o ffm pior no loop-off seriam necessárias mais repetições (~5) e uma taxa maior. A comparação com vt-off (15–21 ms) está na branch `custom-http-feature`.
 
 ## Ciclo 3: GraalVM native-image (estático)
 
-GraalVM CE 25.0.2, `--gc=serial -O3`, sem PGO (só Oracle GraalVM). `bench/native-build.sh [flat|baseline]` gera `target/native/{agendamento,baseline}`; `LINK=musl` (padrão, `--static --libc=musl`) ou `LINK=mostly` (`--static-nolibc`, glibc dinâmica), `OPT=` troca o nível. `NATIVE=1` no `server.sh` e células `impl:mem[:musl|mostly]` no `repeat.sh` rodam com os mesmos `-Xmx/-Xms128m` e `taskset` de 1 vCPU (sem JFR/NMT; RSS via `/proc`). Resultados: `results/repeat/summary-o3.md` (2000/s, delay 20 ms) e `summary-o3-saturated.md` (8000/s, delay 1 ms), 3 repetições. Os `summary-native*.md` são a rodada antiga (`-O2`, FFM).
+GraalVM CE 25.0.2, `--gc=serial -O3`, sem PGO (só Oracle GraalVM). `./run.sh native-build` gera `target/native/agendamento`; `LINK=musl` (padrão, `--static --libc=musl`) ou `LINK=mostly` (`--static-nolibc`, glibc dinâmica), `OPT=` troca o nível. `NATIVE=1` no `server.sh` e células `impl:mem[:musl|mostly]` no `repeat.sh` rodam com os mesmos `-Xmx/-Xms128m` e `taskset` de 1 vCPU (sem JFR/NMT; RSS via `/proc`). Resultados: 3 repetições, 2000/s com delay 20 ms (`./run.sh repeat 40000 3`); os arquivos gerados em `results/` não são versionados.
 
 **Backends em imagem nativa**
 - **FFM `MemorySegment` é lento em nativo**, e não por causa do downcall (issue [graal#12219](https://github.com/oracle/graal/issues/12219) trata do custo de *downcall*): num micro com 4 acessos a uma `Region` por iteração, `ffm` ≈ 470 ns, `direct` ≈ 13 ns, `native` ≈ 6,7 ns (na JVM o ffm é só ~2x o direct). `VarHandle` `static final` não ajudou.
 - **`NativeRegion`** (`-Dflat.memory=native`, só em imagem): `UnmanagedMemory.calloc` + `Pointer.readInt/writeInt` do Native Image SDK (Word API). Limitado a <2 GB, sem free.
 - **`NativeAffinity`**: `@CFunction` para `sched_setaffinity`/`sched_getaffinity`. Resolvido em link estático, então o **pin funciona em imagem estática musl** (o FFM `defaultLookup()` falha com `libc.so.6`). SDK `provided`, só referenciado dessas duas classes.
-- **Jackson (vt-heap)** precisa de reflection config nos records de `HeapController` (`bench/native/.../reachability-metadata.json`).
 
 **Cenário 2000/s (mediana, loop-off):**
 
@@ -278,13 +209,9 @@ GraalVM CE 25.0.2, `--gc=serial -O3`, sem PGO (só Oracle GraalVM). `bench/nativ
 | mostly direct | 74 | 0,25 | 1,39 | 21,7 |
 | mostly native | 50 | 0,24 | 1,33 | 23,0 |
 
-vt-off: RSS 260 (JVM) → 44 direct / **40 native** (musl); p50 read 0,28 → 0,34, p99 2,7 → 2,7. vt-heap (Jackson sem JIT): p50 read 0,35 → 0,48 e p99 write 24 → 36 ms, pior que a JVM.
-
-**Cenário saturado (8000/s, delay 1 ms):** muito ruidoso (faixas min..max largas). loop-off fica na mesma ordem da JVM (p50 read 1–3 ms, p99 30–40 ms, exceto 1 outlier musl native 65 ms); vt-off nativo é pior em leitura (p50 ~37 ms contra 8 ms na JVM) e vt-heap também (p50 read 59–65 contra 31 ms).
-
 Conclusões:
-- **Memória:** RSS cai de 235–260 MB para 40–75 MB; `NativeRegion` é o menor (47–50 MB loop-off). Parte da queda é ausência de `AlwaysPreTouch`. Binário de 17–22 MB.
-- **`-O3` + `NativeRegion` empata com a JVM** em baixa carga no loop-off (p50 0,24 vs 0,20, p99 read igual ou melhor) com ~5x menos RSS. Sob saturação o nativo sem JIT/PGO não vence a JVM.
+- **Memória:** RSS cai de ~237 MB para 47–74 MB; `NativeRegion` é o menor (47–50 MB loop-off). Parte da queda é ausência de `AlwaysPreTouch`. Binário de ~17 MB.
+- **`-O3` + `NativeRegion` empata com a JVM** em baixa carga no loop-off (p50 0,24 vs 0,20, p99 read igual ou melhor) com ~5x menos RSS. Sob saturação, sem JIT/PGO, o nativo não vence a JVM (rodadas saturadas ruidosas; ver branch `custom-http-feature` para vt-off/vt-heap em nativo).
 - **musl vs mostly-static:** latência equivalente dentro do ruído; musl usa ~3–4 MB menos RSS e não depende de glibc no destino. Mostly só se justifica se precisar de recursos da glibc (DNS/NSS, `dlopen`).
 - **Evitar FFM em nativo**; use `direct` ou `native` (`@CFunction`/Word API).
 - **Boot:** a coluna "boot to listening" inclui warm-up com resolução de 1 s; não serve como boot frio.
@@ -305,14 +232,10 @@ Conclusões:
 - O RSS baixo do nativo sem warm-up (21 MB) vem de o warm-up tocar ~30 MB de eden com dados falsos.
 - Limitações: 3 repetições (1 com JFR no nativo, só para GC), k6 na mesma máquina; JFR ligado altera um pouco a latência, então ela não foi comparada.
 
-## Conclusão (ciclos 1-3)
-
-**Ciclo 1: modelos de concorrência (1 vCPU, 128 MB)**
-- Virtual threads e cached pool escalam; o fixed pool é limitado pelo tamanho do pool (200 s para 100 mil tarefas). Virtual threads ficam em ~1,1 s para 1.000, 10.000 e 100.000 tarefas.
-- Sob escassez de CPU, o que importa é o custo de agendar e de alocar, não o número de threads.
+## Conclusão (ciclos 2 e 3)
 
 **Ciclo 2: servidor flat, zero alocação, off-heap**
-- O loop NIO single-thread (`loop-off`) tem a melhor cauda, e o pin em 1 vCPU elimina a disputa.
+- O loop NIO single-thread tem a melhor cauda, e o pin em 1 vCPU elimina a disputa.
 - Com off-heap, `StructLayout` e pooling, o JFR mostra zero alocação durante a carga.
 - `direct` (`ByteBuffer`) fica ligeiramente à frente do FFM na JVM; o FFM é eficiente mesmo assim.
 - O `AlwaysPreTouch` explica ~90 MB do RSS: sem ele a JVM vai de 237 para ~145 MB.
@@ -321,19 +244,12 @@ Conclusões:
 - Imagens estáticas musl e `-O3` funcionam, e o pin funciona via `@CFunction`.
 - O FFM `MemorySegment` é lento em nativo (~470 ns contra ~13 ns do `direct` no micro). A causa é o acesso ao segmento, não o downcall da issue #12219. O `NativeRegion` (Word API) é o backend certo em nativo (~6,7 ns).
 - RSS do loop-off nativo: 21-49 MB, contra 108-145 MB na JVM sem pre-touch.
-- A latência empata com a JVM aquecida no loop-off, e o nativo não precisa de warm-up. O GC não pausa durante a carga em nenhum dos dois.
-- Sob saturação, ou com Jackson e virtual threads, o nativo sem PGO perde para o JIT. Musl e mostly-static são equivalentes em latência.
+- A latência empata com a JVM aquecida, e o nativo não precisa de warm-up. O GC não pausa durante a carga em nenhum dos dois.
+- Musl e mostly-static são equivalentes em latência.
 
 **Limites do estudo:** 1 vCPU, k6 na mesma máquina e 3 repetições (diferenças abaixo de ~1 ms não são conclusivas); PGO (Oracle GraalVM) não testado; boot frio não medido com resolução fina.
 
-**Ponto de partida para o io_uring:** `loop-off` flat com `NativeRegion` em musl estático (menor RSS, pin via `@CFunction` já funciona).
-
 ## Limitações
 
-- Uma execução por ponto; sem repetições, mediana ou dispersão. As diferenças de tempo entre as variantes flat (1,06–1,14s) e o ganho de tempo do Compact Object Headers não são conclusivos.
-- O servidor flat do ciclo 2 aloca por conexão (JDK NIO) e fecha a conexão se a resposta não couber no buffer de escrita; a lista é truncada pela capacidade do corpo.
-- Epoll fora de escopo; io_uring é o candidato para I/O assíncrono real.
-
-## Próximo ciclo
-
-Passo 11: comparar com `HttpServer` do JDK e virtual threads sob a mesma carga; passo 12: variante FFM.
+- O servidor flat aloca por conexão (JDK NIO) e fecha a conexão se a resposta não couber no buffer de escrita; a lista é truncada pela capacidade do corpo.
+- Epoll fora de escopo; io_uring é o candidato para I/O assíncrono real (branch futura `custom-iouring-feature`).

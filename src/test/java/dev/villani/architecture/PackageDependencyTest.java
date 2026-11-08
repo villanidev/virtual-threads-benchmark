@@ -17,11 +17,11 @@ class PackageDependencyTest {
     private static final Path MAIN = Path.of("src/main/java/dev/villani");
 
     @Test
-    @DisplayName("given the reusable server package, when scanning its sources, then it never references the application or benchmark packages")
-    void givenServerSources_whenScanningImports_thenNoDependencyOnApplicationOrBenchmark() throws IOException {
+    @DisplayName("given the reusable server package, when scanning its sources, then it never references the application package")
+    void givenServerSources_whenScanningImports_thenNoDependencyOnApplication() throws IOException {
         // given
         final Path server = MAIN.resolve("server");
-        final List<String> forbidden = List.of("dev.villani.application", "dev.villani.benchmark");
+        final List<String> forbidden = List.of("dev.villani.application");
 
         // when
         final List<String> violations;
