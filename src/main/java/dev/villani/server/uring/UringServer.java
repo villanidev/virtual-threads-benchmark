@@ -76,9 +76,22 @@ public final class UringServer implements ConnectionIo, ServerLoop {
             ringAddr[i] = MemorySegment.ofBuffer(pool.readRing(i).backing()).address();
             writeAddr[i] = MemorySegment.ofBuffer(pool.writeBuffer(i)).address();
         }
-        this.ring = new Ring(sys, arena, RING_ENTRIES);
+        this.ring = new Ring(sys, arena, RING_ENTRIES, setupFlags());
         this.listenFd = listen(host, port);
         this.localPort = boundPort();
+    }
+
+    /**
+     * {@code -Dserver.uring.mode}: {@code plain} (no flags), {@code coop} (default: COOP_TASKRUN, no IPIs/interrupts for
+     * completion work) or {@code defer} (SINGLE_ISSUER|DEFER_TASKRUN: completion work only runs inside io_uring_enter;
+     * the thread that builds the server must be the one that runs it).
+     */
+    private static int setupFlags() {
+        return switch (System.getProperty("server.uring.mode", "coop")) {
+            case "plain" -> 0;
+            case "defer" -> Ring.SETUP_SINGLE_ISSUER | Ring.SETUP_DEFER_TASKRUN | Ring.SETUP_COOP_TASKRUN;
+            default -> Ring.SETUP_COOP_TASKRUN;
+        };
     }
 
     private int listen(String host, int port) throws IOException {

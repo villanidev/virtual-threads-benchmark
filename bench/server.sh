@@ -8,7 +8,7 @@
 #      IMPL (unset = plain run, outputs in bench/results; loop-off: comparison mode, outputs go to results/compare/raw, NMT on)
 #      MEM_API (direct|ffm: off-heap backend, -Dflat.memory) PIN (cpu number: pins the loop thread via FFM sched_setaffinity, -Dflat.pin;
 #      must be inside SERVER_CPU; loop-off only)
-#      TRANSPORT (nio|uring: event-loop transport, -Dserver.transport; uring needs the JVM, Linux >= 5.11)
+#      TRANSPORT (nio|uring: event-loop transport, -Dserver.transport; uring needs the JVM, Linux >= 5.11) URING_MODE (plain|coop|defer, default coop)
 #      HEAP (128, MB) GC (unset = JVM default, serial on 1 vCPU; serial|zgc|g1|parallel: adds -XX:+Use<GC>GC and a name suffix)
 #      SERVER_CPU (0) LOAD_CPU (2-3) TAG JAVA_EXTRA
 #      NATIVE (1 = run target/native/agendamento instead of the JVM; needs IMPL; no JFR/NMT)
@@ -23,7 +23,7 @@ if [ -n "$IMPL" ]; then
   [ "$HEAP" != 128 ] && SUF="$SUF-h$HEAP"
   [ -n "$GC" ] && SUF="$SUF-$GC"
   [ "$MEM_API" != direct ] && SUF="$SUF-$MEM_API"
-  [ "${TRANSPORT:-nio}" != nio ] && SUF="$SUF-$TRANSPORT"
+  [ "${TRANSPORT:-nio}" != nio ] && SUF="$SUF-$TRANSPORT${URING_MODE:+-$URING_MODE}"
   [ -n "$PIN" ] && SUF="$SUF-pin$PIN"
   [ -n "${NATIVE:-}" ] && SUF="$SUF-native${NATIVE_TAG:+-$NATIVE_TAG}"
   NAME="${IMPL}${SUF}-${N}${TAG:+-$TAG}"
@@ -36,7 +36,7 @@ mkdir -p "$JFR_DIR" "$OUT_DIR"
 [ -d target/classes/dev/villani/application ] || mvn -q compile
 JVM_FLAGS=""
 case "$GC" in "") ;; serial) JVM_FLAGS="-XX:+UseSerialGC";; zgc) JVM_FLAGS="-XX:+UseZGC";; g1) JVM_FLAGS="-XX:+UseG1GC";; parallel) JVM_FLAGS="-XX:+UseParallelGC";; *) echo "bad GC $GC"; exit 2;; esac
-JVM_FLAGS="$JVM_FLAGS -Dserver.transport=${TRANSPORT:-nio} -Dflat.memory=$MEM_API${PIN:+ -Dflat.pin=$PIN}"
+JVM_FLAGS="$JVM_FLAGS -Dserver.transport=${TRANSPORT:-nio} ${URING_MODE:+-Dserver.uring.mode=$URING_MODE} -Dflat.memory=$MEM_API${PIN:+ -Dflat.pin=$PIN}"
 MAIN=(dev.villani.application.agendamento.AgendamentoServer "$PORT" "${DELAY_MS:-20}" "${WARM:-0}")
 CP=target/classes
 [ -n "$IMPL" ] && JVM_FLAGS="$JVM_FLAGS -XX:NativeMemoryTracking=summary"
@@ -87,6 +87,7 @@ PHASES=${PHASES:-write,read,mixed}
   echo "boot to listening (ms): $BOOT_MS  binary (KB): $( [ -n "${NATIVE:-}" ] && du -k "$BIN" | cut -f1 || echo jvm)"
   echo "server RSS (KB): $(awk '/VmRSS/{print $2}' /proc/$SERVER/status)  threads: $(awk '/Threads/{print $2}' /proc/$SERVER/status)"
   echo "server RssAnon (KB): $(awk '/RssAnon/{print $2}' /proc/$SERVER/status)  RssFile (KB): $(awk '/RssFile/{print $2}' /proc/$SERVER/status)"
+  echo "server CPU (ms): $(awk -v t="$(getconf CLK_TCK)" '{printf "user=%d sys=%d", $14*1000/t, $15*1000/t}' /proc/$SERVER/stat)"
   if [ -n "$IMPL" ] && [ -z "${NATIVE:-}" ]; then jcmd "$SERVER" VM.native_memory summary > "${JFR_DIR}/${NAME}.nmt.txt" 2>&1 || true; fi
 } | tee "$OUT"
 

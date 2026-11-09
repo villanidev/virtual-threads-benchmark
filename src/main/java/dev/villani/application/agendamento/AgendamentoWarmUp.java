@@ -8,6 +8,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -28,22 +30,31 @@ public final class AgendamentoWarmUp {
     private AgendamentoWarmUp() {
     }
 
-    /** One cycle = create + list + cancel (plus occasional pipelining and reconnects). */
+    /**
+     * One cycle = create + list + cancel (plus occasional pipelining and reconnects). The server is built on the
+     * loop thread itself: io_uring's SINGLE_ISSUER mode binds the ring to the thread that creates it.
+     */
     static void run(int cycles) throws IOException, InterruptedException {
-        try (AgendamentoServer warm = new AgendamentoServer("127.0.0.1", 0, CLIENTS * 2,
-                DelayPolicy.fixed(WARM_DELAY_MS), () -> System.nanoTime() / 1_000_000, Transport.fromProperty())) {
-            final Thread loop = new Thread(() -> {
-                try {
-                    warm.run();
-                } catch (IOException ignored) {
-                    // closed below
-                }
-            }, "warm-up-loop");
-            loop.start();
-            drive(warm.port(), cycles, true);
-            warm.stop();
-            loop.join(2_000);
+        final CompletableFuture<AgendamentoServer> started = new CompletableFuture<>();
+        final Thread loop = new Thread(() -> {
+            try (AgendamentoServer warm = new AgendamentoServer("127.0.0.1", 0, CLIENTS * 2,
+                    DelayPolicy.fixed(WARM_DELAY_MS), () -> System.nanoTime() / 1_000_000, Transport.fromProperty())) {
+                started.complete(warm);
+                warm.run();
+            } catch (IOException | RuntimeException e) {
+                started.completeExceptionally(e);
+            }
+        }, "warm-up-loop");
+        loop.start();
+        final AgendamentoServer warm;
+        try {
+            warm = started.get();
+        } catch (ExecutionException e) {
+            throw new IOException("warm-up server failed", e.getCause());
         }
+        drive(warm.port(), cycles, true);
+        warm.stop();
+        loop.join(2_000);
     }
 
     /**

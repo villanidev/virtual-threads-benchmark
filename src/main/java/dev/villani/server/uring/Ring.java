@@ -34,6 +34,7 @@ final class Ring implements AutoCloseable {
 
     private final Sys sys;
     private final int fd;
+    private final int setupFlags;
     private final int sqEntries;
     private final long cqMask;
     private final MemorySegment sqRing;
@@ -52,14 +53,33 @@ final class Ring implements AutoCloseable {
     private int submitted;
     private boolean closed;
 
+    static final int SETUP_COOP_TASKRUN = 1 << 8;
+    static final int SETUP_SINGLE_ISSUER = 1 << 12;
+    static final int SETUP_DEFER_TASKRUN = 1 << 13;
+    private static final int EINVAL = 22;
+
     Ring(Sys sys, Arena arena, int entries) {
+        this(sys, arena, entries, 0);
+    }
+
+    /** {@code setupFlags} are best effort: kernels that reject them (EINVAL) get a plain ring. */
+    Ring(Sys sys, Arena arena, int entries, int setupFlags) {
         this.sys = sys;
         final MemorySegment p = arena.allocate(PARAMS_BYTES, 8);
-        final long r = sys.call(Sys.SYS_IO_URING_SETUP, entries, p.address(), 0);
+        long r = -EINVAL;
+        if (setupFlags != 0) {
+            p.set(ValueLayout.JAVA_INT, 8, setupFlags);
+            r = sys.call(Sys.SYS_IO_URING_SETUP, entries, p.address(), 0);
+        }
+        if (r == -EINVAL) {
+            p.fill((byte) 0);
+            r = sys.call(Sys.SYS_IO_URING_SETUP, entries, p.address(), 0);
+        }
         if (r < 0) {
             throw new IllegalStateException("io_uring_setup failed, errno " + -r);
         }
         this.fd = (int) r;
+        this.setupFlags = p.get(ValueLayout.JAVA_INT, 8);
         this.sqEntries = p.get(ValueLayout.JAVA_INT, 0);
         final int cqEntries = p.get(ValueLayout.JAVA_INT, 4);
         final int features = p.get(ValueLayout.JAVA_INT, 20);
@@ -91,6 +111,8 @@ final class Ring implements AutoCloseable {
         this.sqTail = sqRing.get(ValueLayout.JAVA_INT, sqTailOff);
         this.submitted = sqTail;
         this.enterArg = arena.allocate(40, 8);
+        // take the timeout branch once, so the JIT profile never treats it as untaken (a deopt there would allocate)
+        submitAndWait(1_000_000L);
     }
 
     private MemorySegment map(long bytes, long offset) {
@@ -103,6 +125,11 @@ final class Ring implements AutoCloseable {
 
     int sqEntries() {
         return sqEntries;
+    }
+
+    /** Setup flags the kernel actually accepted. */
+    int setupFlags() {
+        return setupFlags;
     }
 
     /** SQEs queued but not yet handed to the kernel. */
