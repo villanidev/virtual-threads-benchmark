@@ -261,6 +261,7 @@ Conclusões:
 - **nio ≈ uring**, na JVM e no nativo. Em 1 vCPU o custo dominante é a pilha TCP do kernel no loopback e o k6; o io_uring só economiza algumas syscalls por requisição (um `io_uring_enter` agrupa recv/send), o que fica abaixo do ruído. A vantagem do io_uring costuma aparecer com muitas conexões, várias CPUs, SQPOLL ou I/O de disco, nada disso neste cenário.
 - Em nativo o uring funciona igual ao nio, com o mesmo RSS (47 MB, contra ~238 MB da JVM com pre-touch).
 - Zero alocação: no teste `AllocationProbe` o loop uring aloca 0 B na JVM.
+- GC e JFR no nativo uring (imagem `--enable-monitoring=jfr`, 1 repetição): 16 GCs, todos no warm-up (o último, 0,4 ms, antes do `listening`), e nenhum durante a carga. Das amostras de alocação do JFR após o warm-up (32), nenhuma tem frame de `dev.villani`: só `HashMap` do próprio JFR/runtime.
 - Diferenças abaixo de ~1 ms não são conclusivas (3 repetições, k6 na mesma máquina).
 
 
