@@ -24,7 +24,7 @@ import dev.villani.server.memory.ReadyQueue;
  * <p>
  * Allocation: only what the JDK allocates per connection (channel, selection key) and at start-up.
  */
-public final class NioServer implements AutoCloseable {
+public final class NioServer implements AutoCloseable, ConnectionIo {
 
     /**
      * Event loop: é single-thread, com Selector, accept, leitura, escrita e backpressure.

@@ -47,6 +47,29 @@ public final class ByteRing {
         return capacity - size;
     }
 
+    /** Backing buffer, so a transport can receive straight into the free space (see {@link #tail()}). */
+    public ByteBuffer backing() {
+        return buf;
+    }
+
+    /** Offset in the backing buffer where the next byte is written. */
+    public int tail() {
+        return (head + size) & mask;
+    }
+
+    /** Free bytes starting at {@link #tail()} that do not wrap around the end of the backing buffer. */
+    public int contiguousWritable() {
+        return Math.min(capacity - size, capacity - tail());
+    }
+
+    /** Declares that {@code n} bytes were written by the transport at {@link #tail()}. */
+    public void commit(int n) {
+        if (n < 0 || n > contiguousWritable()) {
+            throw new IllegalArgumentException("cannot commit " + n + ", contiguous free " + contiguousWritable());
+        }
+        size += n;
+    }
+
     public void clear() {
         head = 0;
         size = 0;

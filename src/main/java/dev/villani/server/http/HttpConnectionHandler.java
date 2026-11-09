@@ -2,7 +2,7 @@ package dev.villani.server.http;
 
 import dev.villani.server.memory.ByteRing;
 import dev.villani.server.net.ConnectionHandler;
-import dev.villani.server.net.NioServer;
+import dev.villani.server.net.ConnectionIo;
 import dev.villani.server.time.TimerWheel;
 
 import java.nio.ByteBuffer;
@@ -10,12 +10,15 @@ import java.util.Arrays;
 import java.util.function.LongSupplier;
 
 /**
- * Bridges the NIO loop and the HTTP {@link Dispatcher}: parses pipelined requests, stages responses
+ * Bridges the transport loop (NIO or io_uring) and the HTTP {@link Dispatcher}: parses pipelined requests, stages responses
  * in the connection write buffer and handles deferred (async) responses with a {@link TimerWheel}.
  * While a response is deferred the connection is not read further, which preserves response order.
  * Limit: a response that does not fit the write buffer even after a flush closes the connection.
  */
 public final class HttpConnectionHandler implements ConnectionHandler {
+
+    /** Upper bound of status line + headers of one response. */
+    private static final int HEADER_MAX_BYTES = 256;
 
     private final Dispatcher dispatcher;
     private final HttpResponse response;
@@ -40,7 +43,7 @@ public final class HttpConnectionHandler implements ConnectionHandler {
     }
 
     @Override
-    public void onReadable(NioServer server, int slot) {
+    public void onReadable(ConnectionIo server, int slot) {
         if (deferred[slot]) {
             return;
         }
@@ -48,7 +51,7 @@ public final class HttpConnectionHandler implements ConnectionHandler {
     }
 
     @Override
-    public void onTick(NioServer server) {
+    public void onTick(ConnectionIo server) {
         wheel.advanceTo(clockMs.getAsLong());
         int slot;
         while ((slot = wheel.pollExpired()) != TimerWheel.NONE) {
@@ -84,9 +87,18 @@ public final class HttpConnectionHandler implements ConnectionHandler {
         return wheel.nextDueInMs(clockMs.getAsLong());
     }
 
-    private void pump(NioServer server, int slot) {
+    private void pump(ConnectionIo server, int slot) {
         final ByteRing ring = server.readRing(slot);
+        final int headroom = response.body().capacity() + HEADER_MAX_BYTES;
         while (true) {
+            // Another response might not fit: drain first and resume once the transport reports the slot readable again.
+            if (server.writeBuffer(slot).remaining() < headroom) {
+                server.flush(slot);
+                if (!server.isOpen(slot) || server.isWritePending(slot)
+                        || server.writeBuffer(slot).remaining() < headroom) {
+                    return;
+                }
+            }
             final int result = dispatcher.process(slot, ring, response);
             if (result == Dispatcher.NEED_MORE) {
                 break;
@@ -128,7 +140,7 @@ public final class HttpConnectionHandler implements ConnectionHandler {
     }
 
     /** Serialises the response into the slot buffer. Returns false if the connection had to be closed. */
-    private boolean stage(NioServer server, int slot) {
+    private boolean stage(ConnectionIo server, int slot) {
         final ByteBuffer out = server.writeBuffer(slot);
         if (ResponseWriter.write(response, out)) {
             return true;
