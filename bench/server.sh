@@ -8,6 +8,7 @@
 #      IMPL (unset = plain run, outputs in bench/results; loop-off: comparison mode, outputs go to results/compare/raw, NMT on)
 #      MEM_API (direct|ffm: off-heap backend, -Dflat.memory) PIN (cpu number: pins the loop thread via FFM sched_setaffinity, -Dflat.pin;
 #      must be inside SERVER_CPU; loop-off only)
+#      TRANSPORT (nio|uring: event-loop transport, -Dserver.transport; uring needs the JVM, Linux >= 5.11)
 #      HEAP (128, MB) GC (unset = JVM default, serial on 1 vCPU; serial|zgc|g1|parallel: adds -XX:+Use<GC>GC and a name suffix)
 #      SERVER_CPU (0) LOAD_CPU (2-3) TAG JAVA_EXTRA
 #      NATIVE (1 = run target/native/agendamento instead of the JVM; needs IMPL; no JFR/NMT)
@@ -22,6 +23,7 @@ if [ -n "$IMPL" ]; then
   [ "$HEAP" != 128 ] && SUF="$SUF-h$HEAP"
   [ -n "$GC" ] && SUF="$SUF-$GC"
   [ "$MEM_API" != direct ] && SUF="$SUF-$MEM_API"
+  [ "${TRANSPORT:-nio}" != nio ] && SUF="$SUF-$TRANSPORT"
   [ -n "$PIN" ] && SUF="$SUF-pin$PIN"
   [ -n "${NATIVE:-}" ] && SUF="$SUF-native${NATIVE_TAG:+-$NATIVE_TAG}"
   NAME="${IMPL}${SUF}-${N}${TAG:+-$TAG}"
@@ -34,7 +36,7 @@ mkdir -p "$JFR_DIR" "$OUT_DIR"
 [ -d target/classes/dev/villani/application ] || mvn -q compile
 JVM_FLAGS=""
 case "$GC" in "") ;; serial) JVM_FLAGS="-XX:+UseSerialGC";; zgc) JVM_FLAGS="-XX:+UseZGC";; g1) JVM_FLAGS="-XX:+UseG1GC";; parallel) JVM_FLAGS="-XX:+UseParallelGC";; *) echo "bad GC $GC"; exit 2;; esac
-JVM_FLAGS="$JVM_FLAGS -Dflat.memory=$MEM_API${PIN:+ -Dflat.pin=$PIN}"
+JVM_FLAGS="$JVM_FLAGS -Dserver.transport=${TRANSPORT:-nio} -Dflat.memory=$MEM_API${PIN:+ -Dflat.pin=$PIN}"
 MAIN=(dev.villani.application.agendamento.AgendamentoServer "$PORT" "${DELAY_MS:-20}" "${WARM:-0}")
 CP=target/classes
 [ -n "$IMPL" ] && JVM_FLAGS="$JVM_FLAGS -XX:NativeMemoryTracking=summary"
@@ -48,7 +50,7 @@ if [ -n "${NATIVE:-}" ]; then
   BIN=target/native/agendamento${BIN_SUFFIX:-}$JSUF
   [ -x "$BIN" ] || { echo "$BIN missing: run bench/native-build.sh"; exit 2; }
   # shellcheck disable=SC2086
-  taskset -c "${SERVER_CPU:-0}" "$BIN" $NI_FLAGS -Xmx${HEAP}m -Xms${HEAP}m -Dflat.memory=$MEM_API ${PIN:+-Dflat.pin=$PIN} \
+  taskset -c "${SERVER_CPU:-0}" "$BIN" $NI_FLAGS -Xmx${HEAP}m -Xms${HEAP}m -Dflat.memory=$MEM_API -Dserver.transport=${TRANSPORT:-nio} ${PIN:+-Dflat.pin=$PIN} \
     -Dsun.net.httpserver.nodelay=true "${MAIN[@]:1}" > "${JFR_DIR}/${NAME}.server.log" 2>&1 &
 else
 # shellcheck disable=SC2086
@@ -72,7 +74,7 @@ BOOT_MS=$(( ($(date +%s%N) - BOOT_T0) / 1000000 ))
 OUT=${OUT_DIR}/${NAME}.txt
 PHASES=${PHASES:-write,read,mixed}
 {
-  echo "# impl=${IMPL:-loop-off} pool=$POOL N=$N vus=$VUS delay=${DELAY_MS:-20}ms warm=${WARM:-0} rate=${RATE:-0} mem=$MEM_API native=${NATIVE_TAG:-${NATIVE:-no}} pin=${PIN:-none} heap=$HEAP gc=${GC:-default} jopts=${JAVA_EXTRA:-} tool=k6 $(date -Is)"
+  echo "# impl=${IMPL:-loop-off} pool=$POOL N=$N vus=$VUS delay=${DELAY_MS:-20}ms warm=${WARM:-0} rate=${RATE:-0} mem=$MEM_API transport=${TRANSPORT:-nio} native=${NATIVE_TAG:-${NATIVE:-no}} pin=${PIN:-none} heap=$HEAP gc=${GC:-default} jopts=${JAVA_EXTRA:-} tool=k6 $(date -Is)"
   printf '%-6s %8s %5s %9s %9s %8s %8s %8s %8s\n' phase requests vus time_ms req/s p50_ms p90_ms p99_ms max_ms
   WRITTEN=0
   for PHASE in ${PHASES//,/ }; do

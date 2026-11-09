@@ -34,6 +34,8 @@ def main(n):
     for txt in sorted(t for t in glob.glob(f"{RAW}/*-{n}-r*.txt") if not t.endswith(".nmt.txt")):
         info, phases, rss, boot = parse(txt)
         mem = info.get("mem", "direct") + ("+" + info["native"] if info.get("native", "no") != "no" else "")
+        if info.get("transport", "nio") != "nio":
+            mem += "+" + info["transport"]
         cells.setdefault((info["impl"], mem), []).append((phases, rss, boot))
     print(f"# Repeated runs: direct vs ffm (N={n}, {max(len(v) for v in cells.values())} reps)\n")
     print("Cells show median [min..max] over the repetitions. 1 vCPU, 128m, k6 constant arrival rate.\n")
