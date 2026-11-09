@@ -8,7 +8,7 @@
 #      IMPL (unset = plain run, outputs in bench/results; loop-off: comparison mode, outputs go to results/compare/raw, NMT on)
 #      MEM_API (direct|ffm: off-heap backend, -Dflat.memory) PIN (cpu number: pins the loop thread via FFM sched_setaffinity, -Dflat.pin;
 #      must be inside SERVER_CPU; loop-off only)
-#      TRANSPORT (nio|uring: event-loop transport, -Dserver.transport; uring needs the JVM, Linux >= 5.11) URING_MODE (plain|coop|defer, default coop)
+#      TRANSPORT (nio|uring: event-loop transport, -Dserver.transport; uring needs Linux >= 5.11) URING_MODE (plain|coop|defer, default coop)
 #      HEAP (128, MB) GC (unset = JVM default, serial on 1 vCPU; serial|zgc|g1|parallel: adds -XX:+Use<GC>GC and a name suffix)
 #      SERVER_CPU (0) LOAD_CPU (2-3) TAG JAVA_EXTRA
 #      NATIVE (1 = run target/native/agendamento instead of the JVM; needs IMPL; no JFR/NMT)

@@ -2,7 +2,7 @@
 
 Servidor HTTP próprio de agendamento, **single-thread, memória plana e zero alocação**, em **1 vCPU** (`taskset -c 0`) e **heap de 128m** (`-Xmx128m -Xms128m`), JDK 25 (Temurin). Transportes: **NIO** (`Selector`) e **io_uring** (syscalls cruas, sem liburing nem JNI), escolhidos por `-Dserver.transport=nio|uring`. Backends off-heap: `DirectByteBuffer`, FFM (`MemorySegment`) e, em imagem nativa, `NativeRegion` (Native Image SDK). Cobre os ciclos 2 (servidor flat), 3 (GraalVM native-image) e 4 (io_uring, JVM e nativo).
 
-> Esta é uma de três branches: `main` (benchmark de concorrência, ciclo 1), `custom-nio-http-feature` (NIO), `custom-iouring-feature` (esta, NIO + io_uring) e `custom-http-feature` (baseline com o `HttpServer` do JDK, virtual threads e pools, usado como ponto de comparação). Os números de comparação com o baseline estão na README daquela branch. A tag `ciclo-1-3-completo` guarda o repositório inteiro antes da separação. Resultados (`results/`, `jfr/`) não são versionados: são gerados pelos scripts.
+> Esta é uma de quatro branches: `main` (benchmark de concorrência, ciclo 1), `custom-nio-http-feature` (NIO), `custom-iouring-feature` (esta, NIO + io_uring) e `custom-http-feature` (baseline com o `HttpServer` do JDK, virtual threads e pools, usado como ponto de comparação). Os números de comparação com o baseline estão na README daquela branch. A tag `ciclo-1-3-completo` guarda o repositório inteiro antes da separação. Resultados (`results/`, `jfr/`) não são versionados: são gerados pelos scripts.
 
 > Os números abaixo vêm de **uma única execução** por ponto, salvo onde há repetições. Servem para ordem de grandeza.
 
