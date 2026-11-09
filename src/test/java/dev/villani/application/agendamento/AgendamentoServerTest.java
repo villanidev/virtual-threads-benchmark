@@ -1,6 +1,7 @@
 package dev.villani.application.agendamento;
 
 import dev.villani.server.http.DelayPolicy;
+import dev.villani.server.net.Transport;
 import dev.villani.testsupport.AllocationProbe;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -30,7 +31,7 @@ class AgendamentoServerTest {
 
     private void start(int connections, int delayMs) throws IOException {
         app = new AgendamentoServer("127.0.0.1", 0, connections, DelayPolicy.fixed(delayMs),
-                () -> System.nanoTime() / 1_000_000);
+                () -> System.nanoTime() / 1_000_000, Transport.fromProperty());
     }
 
     private void startLoop() {
@@ -216,7 +217,7 @@ class AgendamentoServerTest {
                 send(s, post("Zed", 1, JAN_2 + 60L * i));
                 s.close();
                 final long deadline = System.nanoTime() + 2_000_000_000L;
-                while (app.nio().activeConnections() > 0 && System.nanoTime() < deadline) {
+                while (app.loop().activeConnections() > 0 && System.nanoTime() < deadline) {
                     Thread.sleep(2);
                 }
             }
@@ -284,7 +285,7 @@ class AgendamentoServerTest {
             load.start();
             final Runnable iteration = () -> {
                 try {
-                    app.nio().runOnce(1);
+                    app.loop().runOnce(1);
                 } catch (IOException e) {
                     throw new AssertionError(e);
                 }

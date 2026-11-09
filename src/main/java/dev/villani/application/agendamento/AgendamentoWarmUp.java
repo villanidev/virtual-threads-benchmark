@@ -1,6 +1,7 @@
 package dev.villani.application.agendamento;
 
 import dev.villani.server.http.DelayPolicy;
+import dev.villani.server.net.Transport;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -30,7 +31,7 @@ public final class AgendamentoWarmUp {
     /** One cycle = create + list + cancel (plus occasional pipelining and reconnects). */
     static void run(int cycles) throws IOException, InterruptedException {
         try (AgendamentoServer warm = new AgendamentoServer("127.0.0.1", 0, CLIENTS * 2,
-                DelayPolicy.fixed(WARM_DELAY_MS), () -> System.nanoTime() / 1_000_000)) {
+                DelayPolicy.fixed(WARM_DELAY_MS), () -> System.nanoTime() / 1_000_000, Transport.fromProperty())) {
             final Thread loop = new Thread(() -> {
                 try {
                     warm.run();
