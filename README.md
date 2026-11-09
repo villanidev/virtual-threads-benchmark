@@ -17,8 +17,10 @@ LOAD_CPU=1-3 DELAY_MS=1 ./run.sh server 100000 200
 ./run.sh native-build                  # target/native/agendamento (musl estático; LINK=mostly, OPT=3)
 ```
 
+```bash
 TRANSPORT=uring URING_MODE=coop ./run.sh server 100000      # io_uring (plain|coop|defer); requer Linux >= 5.11
 CELLS="loop-off:direct loop-off:direct::uring loop-off:native:musl loop-off:native:musl:uring" ./run.sh repeat 40000 3
+```
 
 Requer k6 no PATH. Testes: `mvn test` e `mvn test -DargLine="-Dflat.memory=ffm --enable-native-access=ALL-UNNAMED"`.
 
@@ -236,7 +238,32 @@ Conclusões:
 - O RSS baixo do nativo sem warm-up (21 MB) vem de o warm-up tocar ~30 MB de eden com dados falsos.
 - Limitações: 3 repetições (1 com JFR no nativo, só para GC), k6 na mesma máquina; JFR ligado altera um pouco a latência, então ela não foi comparada.
 
-## Conclusão (ciclos 2 e 3)
+## Ciclo 4: io_uring (JVM e nativo)
+
+**Design.** `UringServer` implementa o mesmo `ConnectionIo` do NIO, então parser, pool e handlers não mudam. O `Ring` mapeia SQ/CQ/SQEs com `mmap` e escreve SQEs direto em memória off-heap por endereço (`Kernel`). `recv` grava direto na cauda contígua do `ByteRing` e `send` lê direto do buffer de escrita; `accept` é single-shot e só é armado com slot livre (preserva o backpressure do pool). `user_data = op | slot << 4`; um slot só é liberado com `inflight == 0`.
+
+**Kernel.** Na JVM, `FfmKernel` faz um downcall FFM para `syscall(2)` com `captureCallState("errno")`. Em imagem nativa, `NativeKernel` usa `@CFunction("syscall")` (`NO_TRANSITION` nas chamadas curtas, transição normal só no `io_uring_enter` com timeout) e Word API para memória, porque `MemorySegment` é ~470 ns/acesso em nativo. O tratamento de errno é sem ramo, para não causar deopt (e alocação) numa janela medida.
+
+**Modos** (`-Dserver.uring.mode`): `plain`, `coop` (`COOP_TASKRUN`, padrão) e `defer` (`SINGLE_ISSUER|DEFER_TASKRUN`; exige que a thread que cria o ring rode o loop). Ficaram de fora, por decisão: multishot accept (quebraria o backpressure), SQPOLL (exige 2ª CPU, contra a premissa de 1 vCPU) e fixed files/registered buffers (ganho abaixo do ruído). Os três modos empataram dentro de ±5% (~15-16,8k req/s, p99 13-15 ms, modelo fechado, 200k req).
+
+### JVM vs nativo, nio vs uring (loop-off, 1 vCPU, 128m, delay 1 ms, 2000 req/s, N=40000, 3 reps, mediana)
+
+| célula | p99 write | p99 read | p99 mixed | p50 read | RSS MB | boot ms (com warm-up) |
+|---|---|---|---|---|---|---|
+| JVM nio (direct) | 3,39 | 1,01 | 1,94 | 0,20 | 237 | 4015 |
+| JVM uring (direct) | 3,06 | 1,08 | 1,94 | 0,20 | 239 | 4015 |
+| nativo nio (musl, `-O3`) | 2,78 | 1,06 | 2,06 | 0,24 | 47 | 3013 |
+| nativo uring (musl, `-O3`) | 2,50 | 1,29 | 2,06 | 0,27 | 47 | 2013 |
+
+(RSS com `AlwaysPreTouch` na JVM; boot inclui o warm-up de 10000 requisições.)
+
+**Leitura.**
+- **nio ≈ uring**, na JVM e no nativo. Em 1 vCPU o custo dominante é a pilha TCP do kernel no loopback e o k6; o io_uring só economiza algumas syscalls por requisição (um `io_uring_enter` agrupa recv/send), o que fica abaixo do ruído. A vantagem do io_uring costuma aparecer com muitas conexões, várias CPUs, SQPOLL ou I/O de disco, nada disso neste cenário.
+- Em nativo o uring funciona igual ao nio, com o mesmo RSS (47 MB, contra ~238 MB da JVM com pre-touch).
+- Zero alocação: no teste `AllocationProbe` o loop uring aloca 0 B na JVM.
+- Diferenças abaixo de ~1 ms não são conclusivas (3 repetições, k6 na mesma máquina).
+
+
 
 **Ciclo 2: servidor flat, zero alocação, off-heap**
 - O loop NIO single-thread tem a melhor cauda, e o pin em 1 vCPU elimina a disputa.
@@ -256,4 +283,7 @@ Conclusões:
 ## Limitações
 
 - O servidor flat aloca por conexão (JDK NIO) e fecha a conexão se a resposta não couber no buffer de escrita; a lista é truncada pela capacidade do corpo.
-- Epoll fora de escopo; io_uring é o candidato para I/O assíncrono real (branch futura `custom-iouring-feature`).
+- Epoll fora de escopo.
+- `defer` exige que a mesma thread crie o ring e rode o loop (`AgendamentoServerTest` constrói e roda em threads diferentes e não serve para esse modo).
+- O teste de alocação do loop uring é estatístico: toma o mínimo de 3 janelas para absorver uma transição de JIT tardia; houve uma falha esporádica na suíte completa que não foi reproduzida.
+- `NativeKernel` lê errno via `__errno_location` após a chamada; o ETIME/EINTR do `io_uring_enter` com timeout funciona na imagem (o loop ocioso depende disso), mas não há teste automatizado em nativo.
