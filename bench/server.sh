@@ -50,7 +50,7 @@ if [ -n "${NATIVE:-}" ]; then
   BIN=target/native/agendamento${BIN_SUFFIX:-}$JSUF
   [ -x "$BIN" ] || { echo "$BIN missing: run bench/native-build.sh"; exit 2; }
   # shellcheck disable=SC2086
-  taskset -c "${SERVER_CPU:-0}" "$BIN" $NI_FLAGS -Xmx${HEAP}m -Xms${HEAP}m -Dflat.memory=$MEM_API -Dserver.transport=${TRANSPORT:-nio} ${PIN:+-Dflat.pin=$PIN} \
+  taskset -c "${SERVER_CPU:-0}" "$BIN" $NI_FLAGS -Xmx${HEAP}m -Xms${HEAP}m -Dflat.memory=$MEM_API -Dserver.transport=${TRANSPORT:-nio} ${URING_MODE:+-Dserver.uring.mode=$URING_MODE} ${PIN:+-Dflat.pin=$PIN} \
     -Dsun.net.httpserver.nodelay=true "${MAIN[@]:1}" > "${JFR_DIR}/${NAME}.server.log" 2>&1 &
 else
 # shellcheck disable=SC2086

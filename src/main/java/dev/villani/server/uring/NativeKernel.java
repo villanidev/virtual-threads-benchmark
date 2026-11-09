@@ -25,7 +25,7 @@ final class NativeKernel implements Kernel {
     @CFunction(value = "__errno_location", transition = CFunction.Transition.NO_TRANSITION)
     private static native Pointer errnoLocation();
 
-    private final List<Pointer> allocations = new ArrayList<>();
+    private final List<Long> allocations = new ArrayList<>();
 
     @Override
     public long syscall(long nr, long a1, long a2, long a3, long a4, long a5, long a6) {
@@ -42,7 +42,7 @@ final class NativeKernel implements Kernel {
     @Override
     public long alloc(long bytes) {
         final Pointer p = UnmanagedMemory.calloc(WordFactory.unsigned(bytes));
-        allocations.add(p);
+        allocations.add(p.rawValue());
         return p.rawValue();
     }
 
@@ -88,8 +88,8 @@ final class NativeKernel implements Kernel {
 
     @Override
     public void close() {
-        for (Pointer p : allocations) {
-            UnmanagedMemory.free(p);
+        for (long addr : allocations) {
+            UnmanagedMemory.free(WordFactory.<Pointer>pointer(addr));
         }
         allocations.clear();
     }

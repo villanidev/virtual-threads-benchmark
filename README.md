@@ -1,8 +1,8 @@
-# virtual-threads-benchmark (branch `custom-nio-http-feature`)
+# virtual-threads-benchmark (branch `custom-iouring-feature`)
 
-Servidor HTTP próprio de agendamento, **single-thread, NIO, memória plana e zero alocação**, em **1 vCPU** (`taskset -c 0`) e **heap de 128m** (`-Xmx128m -Xms128m`), JDK 25 (Temurin). Backends off-heap: `DirectByteBuffer`, FFM (`MemorySegment`) e, em imagem nativa, `NativeRegion` (Native Image SDK). Cobre os ciclos 2 (servidor flat) e 3 (GraalVM native-image).
+Servidor HTTP próprio de agendamento, **single-thread, memória plana e zero alocação**, em **1 vCPU** (`taskset -c 0`) e **heap de 128m** (`-Xmx128m -Xms128m`), JDK 25 (Temurin). Transportes: **NIO** (`Selector`) e **io_uring** (syscalls cruas, sem liburing nem JNI), escolhidos por `-Dserver.transport=nio|uring`. Backends off-heap: `DirectByteBuffer`, FFM (`MemorySegment`) e, em imagem nativa, `NativeRegion` (Native Image SDK). Cobre os ciclos 2 (servidor flat), 3 (GraalVM native-image) e 4 (io_uring, JVM e nativo).
 
-> Esta é uma de três branches: `main` (benchmark de concorrência, ciclo 1), `custom-nio-http-feature` (esta) e `custom-http-feature` (baseline com o `HttpServer` do JDK, virtual threads e pools, usado como ponto de comparação). Os números de comparação com o baseline estão na README daquela branch. A tag `ciclo-1-3-completo` guarda o repositório inteiro antes da separação. Resultados (`results/`, `jfr/`) não são versionados: são gerados pelos scripts.
+> Esta é uma de três branches: `main` (benchmark de concorrência, ciclo 1), `custom-nio-http-feature` (NIO), `custom-iouring-feature` (esta, NIO + io_uring) e `custom-http-feature` (baseline com o `HttpServer` do JDK, virtual threads e pools, usado como ponto de comparação). Os números de comparação com o baseline estão na README daquela branch. A tag `ciclo-1-3-completo` guarda o repositório inteiro antes da separação. Resultados (`results/`, `jfr/`) não são versionados: são gerados pelos scripts.
 
 > Os números abaixo vêm de **uma única execução** por ponto, salvo onde há repetições. Servem para ordem de grandeza.
 
@@ -17,6 +17,9 @@ LOAD_CPU=1-3 DELAY_MS=1 ./run.sh server 100000 200
 ./run.sh native-build                  # target/native/agendamento (musl estático; LINK=mostly, OPT=3)
 ```
 
+TRANSPORT=uring URING_MODE=coop ./run.sh server 100000      # io_uring (plain|coop|defer); requer Linux >= 5.11
+CELLS="loop-off:direct loop-off:direct::uring loop-off:native:musl loop-off:native:musl:uring" ./run.sh repeat 40000 3
+
 Requer k6 no PATH. Testes: `mvn test` e `mvn test -DargLine="-Dflat.memory=ffm --enable-native-access=ALL-UNNAMED"`.
 
 ## Estrutura de pacotes
@@ -25,7 +28,8 @@ Requer k6 no PATH. Testes: `mvn test` e `mvn test -DargLine="-Dflat.memory=ffm -
 dev.villani
 ├── server                 infraestrutura HTTP flat, reutilizável e sem conhecer o domínio
 │   ├── memory             Region (direct|ffm|native), IntRing, ByteRing, ReadyQueue, ConnectionPool
-│   ├── net                NioServer (Selector, backpressure, ganchos de tick/close)
+│   ├── net                ServerLoop/ConnectionIo/Transport, NioServer (Selector, backpressure, ganchos de tick/close)
+│   ├── uring              UringServer, Ring (SQ/CQ por mmap), Kernel (FfmKernel na JVM, NativeKernel em @CFunction)
 │   ├── http               parser, Router, Dispatcher, ResponseWriter, AsyncHandler, HttpConnectionHandler
 │   ├── json               tokenizador, binder para registro pooled, JsonWriter
 │   ├── os                 CpuAffinity (FFM) e NativeAffinity (@CFunction em imagem nativa)
