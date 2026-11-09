@@ -8,9 +8,7 @@ import dev.villani.server.net.ConnectionIo;
 import dev.villani.server.net.ServerLoop;
 
 import java.io.IOException;
-import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
-import java.lang.foreign.ValueLayout;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
 
@@ -37,8 +35,7 @@ public final class UringServer implements ConnectionIo, ServerLoop {
 
     private final ConnectionPool pool;
     private final ConnectionHandler handler;
-    private final Arena arena = Arena.ofShared();
-    private final Sys sys = new Sys(arena);
+    private final Kernel kernel = Kernel.create();
     private final Ring ring;
     private final int listenFd;
     private final int localPort;
@@ -76,7 +73,7 @@ public final class UringServer implements ConnectionIo, ServerLoop {
             ringAddr[i] = MemorySegment.ofBuffer(pool.readRing(i).backing()).address();
             writeAddr[i] = MemorySegment.ofBuffer(pool.writeBuffer(i)).address();
         }
-        this.ring = new Ring(sys, arena, RING_ENTRIES, setupFlags());
+        this.ring = new Ring(kernel, RING_ENTRIES, setupFlags());
         this.listenFd = listen(host, port);
         this.localPort = boundPort();
     }
@@ -95,29 +92,30 @@ public final class UringServer implements ConnectionIo, ServerLoop {
     }
 
     private int listen(String host, int port) throws IOException {
-        final MemorySegment tmp = arena.allocate(16, 4);
-        final int s = (int) check(sys.call(Sys.SYS_SOCKET, 2, 1 | 0x80000, 0), "socket");
-        tmp.set(ValueLayout.JAVA_INT, 0, 1);
-        check(sys.call(Sys.SYS_SETSOCKOPT, s, 1, 2, tmp.address(), 4, 0), "SO_REUSEADDR");
+        final long tmp = kernel.alloc(16);
+        final int s = (int) check(kernel.syscall(Kernel.SYS_SOCKET, 2, 1 | 0x80000, 0), "socket");
+        kernel.putInt(tmp, 1);
+        check(kernel.syscall(Kernel.SYS_SETSOCKOPT, s, 1, 2, tmp, 4, 0), "SO_REUSEADDR");
         // TCP_NODELAY on the listener is inherited by every accepted socket
-        check(sys.call(Sys.SYS_SETSOCKOPT, s, 6, 1, tmp.address(), 4, 0), "TCP_NODELAY");
+        check(kernel.syscall(Kernel.SYS_SETSOCKOPT, s, 6, 1, tmp, 4, 0), "TCP_NODELAY");
         final byte[] ip = InetAddress.getByName(host).getAddress();
-        tmp.fill((byte) 0);
-        tmp.set(ValueLayout.JAVA_SHORT, 0, (short) 2); // AF_INET
-        tmp.set(ValueLayout.JAVA_SHORT, 2, Short.reverseBytes((short) port));
+        kernel.putLong(tmp, 0L);
+        kernel.putLong(tmp + 8, 0L);
+        kernel.putShort(tmp, (short) 2); // AF_INET
+        kernel.putShort(tmp + 2, Short.reverseBytes((short) port));
         for (int i = 0; i < 4; i++) {
-            tmp.set(ValueLayout.JAVA_BYTE, 4 + i, ip[i]);
+            kernel.putByte(tmp + 4 + i, ip[i]);
         }
-        check(sys.call(Sys.SYS_BIND, s, tmp.address(), 16), "bind");
-        check(sys.call(Sys.SYS_LISTEN, s, 1024, 0), "listen");
+        check(kernel.syscall(Kernel.SYS_BIND, s, tmp, 16), "bind");
+        check(kernel.syscall(Kernel.SYS_LISTEN, s, 1024, 0), "listen");
         return s;
     }
 
     private int boundPort() throws IOException {
-        final MemorySegment tmp = arena.allocate(24, 4);
-        tmp.set(ValueLayout.JAVA_INT, 16, 16);
-        check(sys.call(Sys.SYS_GETSOCKNAME, listenFd, tmp.address(), tmp.address() + 16), "getsockname");
-        return Short.reverseBytes(tmp.get(ValueLayout.JAVA_SHORT, 2)) & 0xFFFF;
+        final long tmp = kernel.alloc(24);
+        kernel.putInt(tmp + 16, 16);
+        check(kernel.syscall(Kernel.SYS_GETSOCKNAME, listenFd, tmp, tmp + 16), "getsockname");
+        return Short.reverseBytes(kernel.getShort(tmp + 2)) & 0xFFFF;
     }
 
     private static long check(long r, String what) throws IOException {
@@ -239,8 +237,8 @@ public final class UringServer implements ConnectionIo, ServerLoop {
         closing[slot] = true;
         handler.onClosed(slot);
         // shutdown completes any recv/send still in flight; the file reference they hold keeps the socket alive until then
-        sys.call(Sys.SYS_SHUTDOWN, fd[slot], 2, 0);
-        sys.call(Sys.SYS_CLOSE, fd[slot], 0, 0);
+        kernel.syscall(Kernel.SYS_SHUTDOWN, fd[slot], 2, 0);
+        kernel.syscall(Kernel.SYS_CLOSE, fd[slot], 0, 0);
         fd[slot] = -1;
         writePending[slot] = false;
         closeAfterWrite[slot] = false;
@@ -259,13 +257,13 @@ public final class UringServer implements ConnectionIo, ServerLoop {
     public void close() {
         for (int slot = 0; slot < fd.length; slot++) {
             if (pool.isInUse(slot) && fd[slot] >= 0) {
-                sys.call(Sys.SYS_CLOSE, fd[slot], 0, 0);
+                kernel.syscall(Kernel.SYS_CLOSE, fd[slot], 0, 0);
                 fd[slot] = -1;
             }
         }
-        sys.call(Sys.SYS_CLOSE, listenFd, 0, 0);
+        kernel.syscall(Kernel.SYS_CLOSE, listenFd, 0, 0);
         ring.close();
-        arena.close();
+        kernel.close();
     }
 
     private void reap() {
@@ -291,7 +289,7 @@ public final class UringServer implements ConnectionIo, ServerLoop {
         }
         final int slot = pool.acquire();
         if (slot == ConnectionPool.NONE) {
-            sys.call(Sys.SYS_CLOSE, res, 0, 0);
+            kernel.syscall(Kernel.SYS_CLOSE, res, 0, 0);
             return;
         }
         fd[slot] = res;

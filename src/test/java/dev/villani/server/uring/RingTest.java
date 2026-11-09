@@ -4,7 +4,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.lang.foreign.Arena;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -13,7 +12,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @DisplayName("Ring (io_uring)")
 class RingTest {
 
-    private final Arena arena = Arena.ofShared();
+    private final Kernel kernel = Kernel.create();
     private Ring ring;
 
     @AfterEach
@@ -21,11 +20,11 @@ class RingTest {
         if (ring != null) {
             ring.close();
         }
-        arena.close();
+        kernel.close();
     }
 
     private Ring newRing(int entries) {
-        ring = new Ring(new Sys(arena), arena, entries);
+        ring = new Ring(kernel, entries);
         return ring;
     }
 

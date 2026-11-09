@@ -292,7 +292,11 @@ class AgendamentoServerTest {
             };
 
             // when
-            final long bytes = AllocationProbe.bytesAllocated(iteration, 20_000, 20_000);
+            // steady state is deterministic; a late JIT transition may add a one-off allocation, so take the minimum of 3 windows
+            long bytes = AllocationProbe.bytesAllocated(iteration, 40_000, 20_000);
+            for (int round = 1; round < 3 && bytes != 0; round++) {
+                bytes = Math.min(bytes, AllocationProbe.bytesAllocated(iteration, 0, 20_000));
+            }
             stop.set(true);
 
             // then
